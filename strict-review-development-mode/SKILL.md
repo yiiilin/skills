@@ -14,10 +14,11 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 1. 先把任务写成 Markdown checklist 文档。
 2. 每个 checklist 项都必须先写计划，再实施。
 3. 实施后必须记录验证结果，没有验证不得进入审核。
-4. 每个事项都必须交给独立 subagent 审核。
+4. 每个事项都必须交给独立 subagent 审核，并为该事项维护 reviewer 生命周期。
 5. 审核优先使用当前可用的最强最新模型；默认目标是 `gpt-5.4` + `xhigh`。
 6. 只要审查仍提出问题，该事项就不能勾选，必须修正并重新审核。
-7. 只有全部事项勾选后，才允许宣布完成。
+7. 当前事项最终通过后，必须先关闭该事项相关 reviewer，才允许勾选并进入下一项。
+8. 只有全部事项勾选后，才允许宣布完成。
 
 ## 启动流程
 
@@ -109,6 +110,16 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 - 是否缺少必要验证
 - 是否做了不必要的额外实现
 
+### 审查 agent 生命周期
+
+每个 checklist 事项默认只保留一个活跃 reviewer。
+
+- 当前事项第一次审核时，创建一个专属 reviewer，并在 `审核记录` 中记录 agent 标识。
+- 同一事项后续的修复和复审，优先复用同一个 reviewer 继续审查，不要为同一事项反复新开 reviewer。
+- 只有在 reviewer 已不可用、上下文明显失真、或必须切换到更强可用模型时，才允许新开 reviewer。
+- 若必须更换 reviewer，先关闭旧 reviewer；如果做不到，必须在 `审核记录` 中写明原因和剩余 reviewer 的处理计划。
+- reviewer 不得跨事项复用。进入下一事项前，上一事项相关 reviewer 必须全部关闭。
+
 ## 审核循环
 
 只要审查者还提出任何需要处理的问题，都视为未通过。必须循环：
@@ -116,7 +127,8 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 1. 记录问题到 `审核记录`
 2. 修改实现或补充验证
 3. 更新 `实施记录` 和 `验证记录`
-4. 启动新的独立 subagent 重新审核
+4. 优先把新结果发回当前事项既有 reviewer 复审；只有该 reviewer 不可复用时才创建 replacement reviewer
+5. 当前事项最终通过后，显式关闭该事项相关 reviewer，并把关闭结果写入 `审核记录`
 
 只有最新一轮审核明确表示“没有发现问题”或等价批准时，当前事项才允许勾选。
 
@@ -129,6 +141,7 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 - 验证已执行并记录
 - 独立强审已完成
 - 最新审核不再提出问题
+- 当前事项相关 reviewer 已显式关闭并记录
 
 ## 停止条件
 
