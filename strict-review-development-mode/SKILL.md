@@ -17,9 +17,11 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 4. 实施后必须记录验证结果，没有验证不得进入审核。
 5. 每个事项都必须交给独立 subagent 审核，并为该事项维护 reviewer 生命周期。
 6. 审核优先使用当前可用的最强最新模型；默认目标是 `gpt-5.4` + `xhigh`。
-7. 只要审查仍提出问题，该事项就不能勾选，必须修正并重新审核。
-8. 当前事项最终通过后，必须先关闭该事项相关 reviewer，才允许勾选并进入下一项。
-9. 只有全部事项勾选后，才允许宣布完成。
+7. 单次 `wait_agent` 超时只视为软超时，不能直接认定 reviewer 卡死或立即关闭。
+8. 只有在二次探测后仍无结果，且达到硬超时门槛时，才允许关闭 reviewer 并创建 replacement reviewer。
+9. 只要审查仍提出问题，该事项就不能勾选，必须修正并重新审核。
+10. 当前事项最终通过后，必须先关闭该事项相关 reviewer，才允许勾选并进入下一项。
+11. 只有全部事项勾选后，才允许宣布完成。
 
 ## 启动流程
 
@@ -178,6 +180,33 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 - reviewer 不得跨事项复用。进入下一事项前，上一事项相关 reviewer 必须全部关闭。
 - 并行模式下也不得突破活跃 reviewer 上限；若已有 `2` 个活跃 reviewer，必须先关闭其中一个或回退为串行。
 
+### Reviewer 超时状态机
+
+`wait_agent` 超时不等于 reviewer 已失活。必须区分 `slow` 和 `stalled`。
+
+推荐默认阈值：
+
+- 首次等待窗口：`5` 分钟
+- 二次探测窗口：再等 `5-10` 分钟
+- 硬超时门槛：累计等待至少 `15` 分钟，且至少连续 `2` 次 `wait_agent` 超时
+
+默认状态：
+
+- `reviewing`：正常等待 reviewer 结果
+- `slow`：发生过一次超时，但仍可能在继续工作
+- `suspect-stalled`：达到硬超时门槛，疑似卡死
+- `closed`：已显式关闭
+- `replaced`：旧 reviewer 已关闭，并已切换到 replacement reviewer
+
+处理规则：
+
+- 第一次 `wait_agent` 超时时，只把 reviewer 标记为 `slow`，更新 `审核记录`，不要立即关闭。
+- 第一次超时后，必须做一次二次探测，并给更长等待窗口。
+- 二次探测期间只做被动等待或轮询，不要用打断式手段探活，以免误杀慢 reviewer。
+- 只有在二次探测后仍无结果，且达到硬超时门槛时，才允许把 reviewer 标记为 `suspect-stalled` 并执行 `close_agent`。
+- 关闭后如果当前事项仍需审核，创建 replacement reviewer，并在 `审核记录` 中记录替换原因和新 reviewer 标识。
+- 每个事项最多自动创建 `1` 个 replacement reviewer。若 replacement reviewer 仍达到硬超时，停止自动替换，升级给主 agent 或用户决定。
+
 ## 审核循环
 
 只要审查者还提出任何需要处理的问题，都视为未通过。必须循环：
@@ -186,7 +215,8 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 2. 修改实现或补充验证
 3. 更新 `实施记录` 和 `验证记录`
 4. 优先把新结果发回当前事项既有 reviewer 复审；只有该 reviewer 不可复用时才创建 replacement reviewer
-5. 当前事项最终通过后，显式关闭该事项相关 reviewer，并把关闭结果写入 `审核记录`
+5. 若等待 reviewer 时发生超时，按 Reviewer 超时状态机处理；不要把单次超时直接当成失败或卡死
+6. 当前事项最终通过后，显式关闭该事项相关 reviewer，并把关闭结果写入 `审核记录`
 
 只有最新一轮审核明确表示“没有发现问题”或等价批准时，当前事项才允许勾选。
 
