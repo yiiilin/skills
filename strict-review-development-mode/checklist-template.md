@@ -1,37 +1,69 @@
 # <任务标题>
 
 ## 模式
-- 强审开发模式
+- 强审开发模式（DAG-first）
 
 ## 审核设置
 - 审核模型目标：gpt-5.4
 - 推理强度目标：xhigh
-- 活跃事项上限：2
+- 实施并行上限：4
+- reviewer 并行上限：2
 - 首次等待窗口：5min
 - 二次探测窗口：5-10min
 - 硬超时门槛：15min
 
 ## 当前执行状态
 - 当前状态：进行中
-- 当前活跃事项：待填写
-- 当前活跃 reviewer：待填写
 - 当前阻塞原因：无
-- 下一动作：待填写
+- 当前调度摘要：待填写
+- 当前可执行动作摘要：待填写
 
 ## Checklist
 - [ ] 1. <事项一>
 - [ ] 2. <事项二>
 - [ ] 3. <事项三>
+- [ ] 4. <事项四>
+
+## DAG 概览
+- 关键串行路径：Item 1 / Item 2 -> Item 3
+- 依赖分层摘要：Wave 1 为可并行实施项，Wave 2 为依赖 Wave 1 的集成项
+- 可并行批次：Wave 1 = Item 1 + Item 2 + Item 4；Wave 2 = Item 3
+
+## Mermaid DAG
+```mermaid
+graph TD
+  A[Item 1 - <事项一>] --> C[Item 3 - <事项三>]
+  B[Item 2 - <事项二>] --> C[Item 3 - <事项三>]
+  D[Item 4 - <事项四>]
+```
+
+## Ready 队列
+- 待填写
+
+## Active 实现队列
+- 待填写
+
+## Active reviewer 队列
+- 待填写
+
+## Review Queue
+- 待填写
 
 ## Item 1 - <事项一>
-### 约束
-- 依赖事项：无
-- 冲突事项：无
+### 结构化字段
+- item_id：item-1
+- blocked_by：[]
+- blocks：[item-3]
+- shared_surfaces：[]
+- parallel_group：wave-1
+- dispatch_status：blocked
+- assigned_subagent：none
+- reviewer_id：none
+- reviewer_state：not-started
 - 风险等级：待填写
-- 并行状态：串行
 - 当前状态：未开始
 - 阻塞原因：无
-- 下一动作：待填写
+- next_action：待填写
 
 ### 计划
 - 待填写
@@ -55,14 +87,20 @@
 - 关闭原因：待填写
 
 ## Item 2 - <事项二>
-### 约束
-- 依赖事项：无
-- 冲突事项：无
+### 结构化字段
+- item_id：item-2
+- blocked_by：[]
+- blocks：[item-3]
+- shared_surfaces：[]
+- parallel_group：wave-1
+- dispatch_status：blocked
+- assigned_subagent：none
+- reviewer_id：none
+- reviewer_state：not-started
 - 风险等级：待填写
-- 并行状态：串行
 - 当前状态：未开始
 - 阻塞原因：无
-- 下一动作：待填写
+- next_action：待填写
 
 ### 计划
 - 待填写
@@ -86,14 +124,57 @@
 - 关闭原因：待填写
 
 ## Item 3 - <事项三>
-### 约束
-- 依赖事项：无
-- 冲突事项：无
+### 结构化字段
+- item_id：item-3
+- blocked_by：[item-1, item-2]
+- blocks：[]
+- shared_surfaces：[]
+- parallel_group：wave-2
+- dispatch_status：blocked
+- assigned_subagent：none
+- reviewer_id：none
+- reviewer_state：not-started
 - 风险等级：待填写
-- 并行状态：串行
 - 当前状态：未开始
 - 阻塞原因：无
-- 下一动作：待填写
+- next_action：待填写
+
+### 计划
+- 待填写
+
+### 实施记录
+- 待填写
+
+### 验证记录
+- 待填写
+
+### 审核记录
+- Reviewer：待填写
+- Reviewer 状态：待填写
+- 开始时间：待填写
+- 累计等待时长：待填写
+- 超时次数：待填写
+- 审核轮次：待填写
+- 审核结论：待填写
+- Replacement Reviewer：待填写
+- 关闭状态：待填写
+- 关闭原因：待填写
+
+## Item 4 - <事项四>
+### 结构化字段
+- item_id：item-4
+- blocked_by：[]
+- blocks：[]
+- shared_surfaces：[]
+- parallel_group：wave-1
+- dispatch_status：blocked
+- assigned_subagent：none
+- reviewer_id：none
+- reviewer_state：not-started
+- 风险等级：待填写
+- 当前状态：未开始
+- 阻塞原因：无
+- next_action：待填写
 
 ### 计划
 - 待填写
