@@ -29,11 +29,13 @@
 5. 只要存在互不冲突的 ready 节点，就必须并行派发实现 subagent
 6. 实现完成后按 reviewer 上限进入审核或 `review-queued`
 7. 全部 item 审核通过并关闭 reviewer 后才允许结束
+8. 如用户明确要求打开界面，可启动本地只读 web progress viewer 查看 DAG、队列和 item 详情；checklist 文档仍是唯一 source of truth
 
 目录内容：
 
 - `strict-review-development-mode/SKILL.md`
 - `strict-review-development-mode/checklist-template.md`
+- `strict-review-development-mode/viewer/`（可选本地只读 progress viewer，用于查看 DAG / queue / item 详情，不作为调度真相）
 
 ## 适用前提
 

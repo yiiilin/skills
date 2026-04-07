@@ -258,6 +258,31 @@ Mermaid 必须表达 item-level DAG，而不是只画阶段说明。`blocked_by`
 - 是否缺少必要验证
 - 是否做了不必要的额外实现
 
+## 可选 Web Progress Viewer
+
+当用户明确要求“打开界面”“看进度”“打开 web 界面”或等价意图时，可以启动本地只读 web viewer，帮助查看：
+
+- DAG / 依赖关系
+- ready / active / review-queued / in-review / done 等派生队列
+- item 详情（计划、实施记录、验证记录、审核记录）
+- reviewer 相关状态
+
+边界规则：
+
+- 启动前先询问用户是否需要打开界面，不要默认自动弹出
+- viewer 只作为派生视图，不参与调度决策
+- checklist 文档始终是唯一 source of truth
+- 不允许通过 viewer 直接修改 `dispatch_status`、reviewer 分配或其他调度字段
+- 若 viewer 展示与 checklist 不一致，以 checklist 为准
+
+推荐启动命令：
+
+```bash
+python3 strict-review-development-mode/viewer/serve.py --checklist <checklist-path> --port 0
+```
+
+即使 viewer 已打开，终端中的关键调度摘要仍必须继续输出，不得把 viewer 当成新的控制台。
+
 ## 审查 agent 生命周期
 
 每个 checklist 事项默认只保留一个可复用 reviewer 身份。
