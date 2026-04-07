@@ -95,11 +95,22 @@ class ServeViewerContractTests(unittest.TestCase):
 
         self.assertEqual(expected_status, context.exception.code)
 
-    def test_create_server_rejects_non_loopback_host(self) -> None:
+    def test_create_server_accepts_wildcard_host(self) -> None:
+        server = serve_module.create_server(
+            checklist_path=SAMPLE_FIXTURE,
+            host="0.0.0.0",
+            port=0,
+            state_dir=Path(self.temp_dir.name),
+        )
+        self.addCleanup(server.server_close)
+
+        self.assertEqual("0.0.0.0", server.server_address[0])
+
+    def test_create_server_rejects_non_loopback_non_wildcard_host(self) -> None:
         with self.assertRaises(ValueError):
             serve_module.create_server(
                 checklist_path=SAMPLE_FIXTURE,
-                host="0.0.0.0",
+                host="192.168.1.10",
                 port=0,
                 state_dir=Path(self.temp_dir.name),
             )
@@ -238,7 +249,7 @@ class ServeViewerCliTests(unittest.TestCase):
 
         create_server.assert_called_once_with(
             checklist_path=SAMPLE_FIXTURE,
-            host="127.0.0.1",
+            host="0.0.0.0",
             port=0,
         )
         fake_server.serve_forever.assert_called_once_with()
@@ -265,6 +276,31 @@ class ServeViewerCliTests(unittest.TestCase):
         create_server.assert_called_once_with(
             checklist_path=SAMPLE_FIXTURE,
             host="::1",
+            port=8080,
+        )
+        fake_server.serve_forever.assert_called_once_with()
+
+    def test_main_accepts_explicit_wildcard_host_argument(self) -> None:
+        fake_server = mock.Mock()
+        fake_server.url = "http://0.0.0.0:43123"
+
+        with (
+            mock.patch.object(serve_module, "create_server", return_value=fake_server) as create_server,
+            mock.patch.object(sys, "argv", [
+                str(SERVE_PATH),
+                "--checklist",
+                str(SAMPLE_FIXTURE),
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8080",
+            ]),
+        ):
+            serve_module.main()
+
+        create_server.assert_called_once_with(
+            checklist_path=SAMPLE_FIXTURE,
+            host="0.0.0.0",
             port=8080,
         )
         fake_server.serve_forever.assert_called_once_with()

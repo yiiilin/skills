@@ -247,10 +247,12 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def _is_loopback_host(host: str) -> bool:
+def _is_allowed_bind_host(host: str) -> bool:
     normalized = host.strip()
     if not normalized:
         return False
+    if normalized == "0.0.0.0":
+        return True
     if normalized.lower() == "localhost":
         return True
     if normalized.startswith("[") and normalized.endswith("]"):
@@ -263,12 +265,12 @@ def _is_loopback_host(host: str) -> bool:
 def create_server(
     *,
     checklist_path: str | Path,
-    host: str = "127.0.0.1",
+    host: str = "0.0.0.0",
     port: int = 0,
     state_dir: str | Path | None = None,
 ) -> ViewerServer:
-    if not _is_loopback_host(host):
-        raise ValueError("Viewer server must bind to a loopback host")
+    if not _is_allowed_bind_host(host):
+        raise ValueError("Viewer server must bind to a loopback host or 0.0.0.0")
 
     return ViewerServer(
         (host, port),
@@ -280,7 +282,7 @@ def create_server(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Serve the strict review progress viewer")
     parser.add_argument("--checklist", required=True, help="Path to the checklist markdown file")
-    parser.add_argument("--host", default="127.0.0.1", help="Loopback host to bind")
+    parser.add_argument("--host", default="0.0.0.0", help="Loopback host or 0.0.0.0 to bind")
     parser.add_argument("--port", type=int, default=0, help="Port to bind (use 0 for any available port)")
     return parser.parse_args(argv)
 
