@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import shutil
+import sys
 import tempfile
 import threading
 import unittest
@@ -54,6 +55,7 @@ class BrowserRuntimeSmokeTests(unittest.TestCase):
             if browser_path is None or driver_path is None:
                 server.shutdown()
                 thread.join(timeout=5)
+                server.server_close()
                 self.skipTest("browser runtime unavailable: chromium/chromedriver not installed")
 
             options = ChromeOptions()
@@ -93,6 +95,7 @@ class BrowserRuntimeSmokeTests(unittest.TestCase):
                 driver.quit()
                 server.shutdown()
                 thread.join(timeout=5)
+                server.server_close()
 
 
 def _load_module(name: str, path: Path):
@@ -104,6 +107,7 @@ def _load_module(name: str, path: Path):
         raise ImportError(f"unable to load module from {path}")
 
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 

@@ -96,7 +96,7 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 - 每一项的实施记录区
 - 每一项的验证记录区
 - 每一项的审核记录区
-- 派生队列视图区（可选，但若存在只能由结构化字段推导）
+- 派生队列视图区（可选。若存在，只能由结构化字段推导；缺失这些队列小节本身不构成协议错误）
 - `当前状态` / `阻塞原因` / `下一动作`
 
 每个事项的结构化字段至少要覆盖以下批准调度字段：
@@ -124,6 +124,8 @@ Mermaid 必须表达 item-level DAG，而不是只画阶段说明。`blocked_by`
 - 当前 cycle 重新计算得到的 `dispatch_status`
 
 任何 ready queue、review queue、摘要表都只是派生视图，不能替代 `dispatch_status` 作为调度依据。
+
+文档可以完全不写 `Ready 队列`、`Active 实现队列`、`Active reviewer 队列`、`Review Queue` 这些小节；只要结构化字段、DAG 和 Mermaid 一致，调度协议仍然成立。
 
 ### 每个 cycle 的一致性校对
 
@@ -175,6 +177,7 @@ Mermaid 必须表达 item-level DAG，而不是只画阶段说明。`blocked_by`
 - 当 implementation 槽位可用且存在多个可并行的 `ready` 事项时，必须在同一 cycle 中并行 dispatch 对应数量的 implementation subagents，数量上限为当前可达 cap。
 - 每个进入 `active` 的事项都必须记录其 `assigned_subagent`；若某槽位为空，必须能从 DAG 依赖或 `shared_surfaces` / `parallel_group` 冲突中解释为什么当前 cycle 不能再派发。
 - 如果当前可达上限小于 `4`，原因必须能从 DAG 依赖或 `shared_surfaces` / `parallel_group` 冲突中解释出来。
+- 初始化 checklist 时，无依赖且无当前冲突的事项应直接标记为 `ready`；只有存在未满足依赖或当前 cycle 冲突时，才应标记为 `blocked`。
 
 ### Reviewer 并发上限
 

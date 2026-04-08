@@ -15,8 +15,8 @@
 ## 当前执行状态
 - 当前状态：进行中
 - 当前阻塞原因：无
-- 当前调度摘要：待填写
-- 当前可执行动作摘要：待填写
+- 当前调度摘要：初始可达事项为 item-1、item-2、item-4；item-3 仍受依赖阻塞
+- 当前可执行动作摘要：先补齐可达事项计划，再按 DAG 与 shared_surfaces 补满实施槽位
 
 ## Checklist
 - [ ] 1. <事项一>
@@ -38,16 +38,18 @@ graph TD
 ```
 
 ## Ready 队列
-- 待填写
+- item-1 — <事项一>
+- item-2 — <事项二>
+- item-4 — <事项四>
 
 ## Active 实现队列
-- 待填写
+- 无
 
 ## Active reviewer 队列
-- 待填写
+- 无
 
 ## Review Queue
-- 待填写
+- 无
 
 ## Item 1 - <事项一>
 ### 结构化字段
@@ -56,14 +58,14 @@ graph TD
 - blocks：[item-3]
 - shared_surfaces：[]
 - parallel_group：wave-1
-- dispatch_status：blocked
+- dispatch_status：ready
 - assigned_subagent：none
 - reviewer_id：none
 - reviewer_state：not-started
 - 风险等级：待填写
 - 当前状态：未开始
 - 阻塞原因：无
-- next_action：待填写
+- next_action：补齐计划后进入实施调度
 
 ### 计划
 - 待填写
@@ -93,14 +95,14 @@ graph TD
 - blocks：[item-3]
 - shared_surfaces：[]
 - parallel_group：wave-1
-- dispatch_status：blocked
+- dispatch_status：ready
 - assigned_subagent：none
 - reviewer_id：none
 - reviewer_state：not-started
 - 风险等级：待填写
 - 当前状态：未开始
 - 阻塞原因：无
-- next_action：待填写
+- next_action：补齐计划后进入实施调度
 
 ### 计划
 - 待填写
@@ -136,8 +138,8 @@ graph TD
 - reviewer_state：not-started
 - 风险等级：待填写
 - 当前状态：未开始
-- 阻塞原因：无
-- next_action：待填写
+- 阻塞原因：等待 item-1 与 item-2 进入 done
+- next_action：等待上游依赖完成后重算 dispatch_status
 
 ### 计划
 - 待填写
@@ -167,14 +169,14 @@ graph TD
 - blocks：[]
 - shared_surfaces：[]
 - parallel_group：wave-1
-- dispatch_status：blocked
+- dispatch_status：ready
 - assigned_subagent：none
 - reviewer_id：none
 - reviewer_state：not-started
 - 风险等级：待填写
 - 当前状态：未开始
 - 阻塞原因：无
-- next_action：待填写
+- next_action：补齐计划后进入实施调度
 
 ### 计划
 - 待填写

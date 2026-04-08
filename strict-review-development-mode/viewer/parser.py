@@ -12,10 +12,6 @@ REQUIRED_GLOBAL_HEADINGS = (
     "Checklist",
     "DAG 概览",
     "Mermaid DAG",
-    "Ready 队列",
-    "Active 实现队列",
-    "Active reviewer 队列",
-    "Review Queue",
 )
 
 REQUIRED_ITEM_HEADINGS = (

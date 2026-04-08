@@ -145,6 +145,59 @@ class ParseChecklistContractTests(unittest.TestCase):
         for item in parsed.items:
             self.assertTrue(CONTRACT_FIELD_NAMES.issubset(item.structured_fields))
 
+    def test_template_initial_dispatch_status_matches_dependency_reachability(self) -> None:
+        parsed = parse_file(TEMPLATE_PATH)
+
+        statuses_by_id = {
+            item.structured_fields["item_id"]: item.structured_fields["dispatch_status"]
+            for item in parsed.items
+            if "item_id" in item.structured_fields and "dispatch_status" in item.structured_fields
+        }
+
+        self.assertEqual("ready", statuses_by_id["item-1"])
+        self.assertEqual("ready", statuses_by_id["item-2"])
+        self.assertEqual("blocked", statuses_by_id["item-3"])
+        self.assertEqual("ready", statuses_by_id["item-4"])
+
+    def test_queue_headings_are_optional_when_structured_fields_drive_dispatch(self) -> None:
+        parsed = parse_markdown(
+            "# Optional Queue Checklist\n\n"
+            "## 模式\n"
+            "- 强审开发模式（DAG-first）\n\n"
+            "## 审核设置\n"
+            "- 审核模型目标：gpt-5.4\n\n"
+            "## 当前执行状态\n"
+            "- 当前状态：进行中\n\n"
+            "## Checklist\n"
+            "- [ ] 1. Example item\n\n"
+            "## DAG 概览\n"
+            "- 关键串行路径：Item 1\n\n"
+            "## Mermaid DAG\n"
+            "```mermaid\n"
+            "graph TD\n"
+            "  A[Item 1 - Example item]\n"
+            "```\n\n"
+            + make_item(
+                "Item 1 - Example item",
+                [
+                    "- item_id：item-1",
+                    "- blocked_by：[]",
+                    "- blocks：[]",
+                    "- shared_surfaces：[]",
+                    "- parallel_group：wave-1",
+                    "- dispatch_status：ready",
+                    "- assigned_subagent：none",
+                ],
+            )
+        )
+
+        warning_pairs = {(warning.code, warning.heading) for warning in parsed.warnings}
+        self.assertNotIn(("missing_global_heading", "Ready 队列"), warning_pairs)
+        self.assertNotIn(("missing_global_heading", "Active 实现队列"), warning_pairs)
+        self.assertNotIn(("missing_global_heading", "Active reviewer 队列"), warning_pairs)
+        self.assertNotIn(("missing_global_heading", "Review Queue"), warning_pairs)
+        self.assertEqual("ready", parsed.items[0].structured_fields["dispatch_status"])
+
     def test_ignores_h2_headings_inside_fenced_code_blocks(self) -> None:
         parsed = parse_markdown(
             "# Fence Checklist\n\n"

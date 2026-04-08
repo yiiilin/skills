@@ -155,6 +155,44 @@ class BuildSnapshotContractTests(unittest.TestCase):
         )
         self.assertIn("mermaid_validation_unavailable", warning_codes(snapshot))
 
+    def test_derives_snapshot_queues_without_top_level_queue_sections(self) -> None:
+        parsed = parse_markdown(
+            "# Snapshot Without Queue Sections\n\n"
+            "## 模式\n"
+            "- 强审开发模式（DAG-first）\n\n"
+            "## 审核设置\n"
+            "- 审核模型目标：gpt-5.4\n\n"
+            "## 当前执行状态\n"
+            "- 当前状态：进行中\n\n"
+            "## Checklist\n"
+            "- [ ] 1. Example item\n\n"
+            "## DAG 概览\n"
+            "- 关键串行路径：Item 1\n\n"
+            "## Mermaid DAG\n"
+            "```mermaid\n"
+            "graph TD\n"
+            "  A[Item 1 - Example item]\n"
+            "```\n\n"
+            + make_item(
+                "Item 1 - Example item",
+                [
+                    "- item_id：item-1",
+                    "- blocked_by：[]",
+                    "- blocks：[]",
+                    "- shared_surfaces：[]",
+                    "- parallel_group：wave-1",
+                    "- dispatch_status：ready",
+                    "- assigned_subagent：none",
+                ],
+            )
+        )
+
+        snapshot = build_snapshot(parsed)
+
+        self.assertEqual(["item-1"], queue_ids(snapshot, "ready"))
+        self.assertEqual([], queue_ids(snapshot, "active"))
+        self.assertNotIn("missing_global_heading", warning_codes(snapshot))
+
     def test_derives_queues_from_dispatch_status_and_computes_concurrency(self) -> None:
         parsed = parse_markdown(
             build_checklist(
