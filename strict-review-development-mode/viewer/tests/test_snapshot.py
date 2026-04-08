@@ -12,6 +12,7 @@ SNAPSHOT_PATH = VIEWER_DIR / "snapshot.py"
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 SAMPLE_FIXTURE = FIXTURES_DIR / "sample_checklist.md"
 INVALID_FIXTURE = FIXTURES_DIR / "invalid_cycle_checklist.md"
+REAL_PROGRESS_CHECKLIST = VIEWER_DIR.parents[1] / "docs" / "checklists" / "strict-review-progress-viewer.md"
 
 
 def _load_module(name: str, path: Path):
@@ -416,7 +417,7 @@ class BuildSnapshotContractTests(unittest.TestCase):
 
         self.assertIn("mermaid_validation_unavailable", warning_codes(snapshot))
 
-    def test_treats_item_ids_in_mermaid_labels_as_unstable_references(self) -> None:
+    def test_accepts_alias_node_labels_that_match_unique_item_headings(self) -> None:
         parsed = parse_markdown(
             build_checklist(
                 make_item(
@@ -447,7 +448,140 @@ class BuildSnapshotContractTests(unittest.TestCase):
                     """\
                     ```mermaid
                     graph TD
-                      A[item-1 - Stable source item] --> B[item-2 - Stable target item]
+                      A[Item 1 - Stable source item] --> B[Item 2 - Stable target item]
+                    ```
+                    """
+                ),
+            )
+        )
+
+        snapshot = build_snapshot(parsed)
+
+        self.assertNotIn("mermaid_validation_unavailable", warning_codes(snapshot))
+
+    def test_accepts_mixed_raw_item_ids_and_alias_node_labels_when_aliases_resolve_stably(self) -> None:
+        parsed = parse_markdown(
+            build_checklist(
+                make_item(
+                    "Item 1 - Stable source item",
+                    [
+                        "- item_id：item-1",
+                        "- blocked_by：[]",
+                        "- blocks：[item-2]",
+                        "- shared_surfaces：[]",
+                        "- parallel_group：wave-a",
+                        "- dispatch_status：ready",
+                        "- assigned_subagent：none",
+                    ],
+                ),
+                make_item(
+                    "Item 2 - Stable target item",
+                    [
+                        "- item_id：item-2",
+                        "- blocked_by：[item-1]",
+                        "- blocks：[]",
+                        "- shared_surfaces：[]",
+                        "- parallel_group：wave-a",
+                        "- dispatch_status：blocked",
+                        "- assigned_subagent：none",
+                    ],
+                ),
+                mermaid=textwrap.dedent(
+                    """\
+                    ```mermaid
+                    graph TD
+                      item-1 --> B[Item 2 - Stable target item]
+                    ```
+                    """
+                ),
+            )
+        )
+
+        snapshot = build_snapshot(parsed)
+
+        self.assertNotIn("mermaid_validation_unavailable", warning_codes(snapshot))
+
+    def test_accepts_alias_node_labels_in_real_progress_checklist_regression(self) -> None:
+        parsed = parse_file(REAL_PROGRESS_CHECKLIST)
+
+        snapshot = build_snapshot(parsed)
+
+        self.assertNotIn("mermaid_validation_unavailable", warning_codes(snapshot))
+
+    def test_keeps_mermaid_validation_warning_when_title_only_alias_labels_are_ambiguous(self) -> None:
+        parsed = parse_markdown(
+            build_checklist(
+                make_item(
+                    "Item 1 - Shared alias target",
+                    [
+                        "- item_id：item-1",
+                        "- blocked_by：[]",
+                        "- blocks：[item-2]",
+                        "- shared_surfaces：[]",
+                        "- parallel_group：wave-a",
+                        "- dispatch_status：ready",
+                        "- assigned_subagent：none",
+                    ],
+                ),
+                make_item(
+                    "Item 2 - Shared alias target",
+                    [
+                        "- item_id：item-2",
+                        "- blocked_by：[item-1]",
+                        "- blocks：[]",
+                        "- shared_surfaces：[]",
+                        "- parallel_group：wave-a",
+                        "- dispatch_status：blocked",
+                        "- assigned_subagent：none",
+                    ],
+                ),
+                mermaid=textwrap.dedent(
+                    """\
+                    ```mermaid
+                    graph TD
+                      A[Shared alias target] --> B[Shared alias target]
+                    ```
+                    """
+                ),
+            )
+        )
+
+        snapshot = build_snapshot(parsed)
+
+        self.assertIn("mermaid_validation_unavailable", warning_codes(snapshot))
+
+    def test_keeps_mermaid_validation_warning_when_alias_labels_do_not_stably_map(self) -> None:
+        parsed = parse_markdown(
+            build_checklist(
+                make_item(
+                    "Item 1 - Stable source item",
+                    [
+                        "- item_id：item-1",
+                        "- blocked_by：[]",
+                        "- blocks：[item-2]",
+                        "- shared_surfaces：[]",
+                        "- parallel_group：wave-a",
+                        "- dispatch_status：ready",
+                        "- assigned_subagent：none",
+                    ],
+                ),
+                make_item(
+                    "Item 2 - Stable target item",
+                    [
+                        "- item_id：item-2",
+                        "- blocked_by：[item-1]",
+                        "- blocks：[]",
+                        "- shared_surfaces：[]",
+                        "- parallel_group：wave-a",
+                        "- dispatch_status：blocked",
+                        "- assigned_subagent：none",
+                    ],
+                ),
+                mermaid=textwrap.dedent(
+                    """\
+                    ```mermaid
+                    graph TD
+                      A[Investigate parser gap] --> B[Ship viewer release]
                     ```
                     """
                 ),

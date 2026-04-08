@@ -31,6 +31,8 @@
 7. 全部 item 审核通过并关闭 reviewer 后才允许结束
 8. 如用户明确要求打开界面，可启动本地只读 web progress viewer 查看 DAG、队列和 item 详情；checklist 文档仍是唯一 source of truth
 
+这个可选本地 progress viewer 只在任务执行期间使用，并会在 30 分钟内没有 page requests（no page requests）时自动退出。
+
 目录内容：
 
 - `strict-review-development-mode/SKILL.md`

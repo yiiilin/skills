@@ -11,6 +11,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import ModuleType
@@ -40,6 +41,23 @@ EMPTY_QUEUES = {
     "changes_requested": [],
     "done": [],
 }
+
+DEFAULT_IDLE_TIMEOUT_SECONDS = 1800.0
+DEFAULT_WATCHDOG_INTERVAL_SECONDS = 5.0
+
+
+def _is_root_asset_alias(path: str) -> bool:
+    return path.count("/") == 1 and "." in path.rsplit("/", 1)[-1]
+
+
+def is_activity_path(path: str) -> bool:
+    if path == "/health":
+        return False
+    if path in {"/", "/snapshot"}:
+        return True
+    if path.startswith("/static/"):
+        return True
+    return _is_root_asset_alias(path)
 
 
 def _load_local_module(module_basename: str) -> ModuleType:
@@ -132,12 +150,28 @@ class ViewerServer(ThreadingHTTPServer):
         server_address: tuple[str, int],
         checklist_path: Path,
         state_dir: Path | None = None,
+        *,
+        idle_timeout_seconds: float = DEFAULT_IDLE_TIMEOUT_SECONDS,
+        watchdog_interval_seconds: float = DEFAULT_WATCHDOG_INTERVAL_SECONDS,
     ) -> None:
         self.checklist_path = Path(checklist_path)
         self.state_dir = Path(state_dir) if state_dir is not None else None
         self.state_file_path = state_file_for_checklist(self.checklist_path, self.state_dir)
         self.last_good_snapshot: dict[str, object] | None = None
+        self.idle_timeout_seconds = float(idle_timeout_seconds)
+        self.watchdog_interval_seconds = float(watchdog_interval_seconds)
+        if self.idle_timeout_seconds <= 0:
+            raise ValueError("idle_timeout_seconds must be positive")
+        if self.watchdog_interval_seconds <= 0:
+            raise ValueError("watchdog_interval_seconds must be positive")
         self._snapshot_lock = threading.Lock()
+        self._activity_lock = threading.Lock()
+        self._watchdog_start_lock = threading.Lock()
+        self._idle_shutdown_lock = threading.Lock()
+        self._watchdog_stop_event = threading.Event()
+        self._watchdog_thread: threading.Thread | None = None
+        self._idle_shutdown_started = False
+        self.last_activity_monotonic = time.monotonic()
         if ":" in server_address[0]:
             self.address_family = socket.AF_INET6
         super().__init__(server_address, ViewerRequestHandler)
@@ -147,6 +181,67 @@ class ViewerServer(ThreadingHTTPServer):
         host, port = self.server_address[:2]
         host_text = f"[{host}]" if isinstance(host, str) and ":" in host and not host.startswith("[") else host
         return f"http://{host_text}:{port}"
+
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        self.mark_activity()
+        self._start_watchdog()
+        effective_poll_interval = min(poll_interval, self.watchdog_interval_seconds)
+        try:
+            super().serve_forever(poll_interval=effective_poll_interval)
+        finally:
+            self._watchdog_stop_event.set()
+
+    def shutdown(self) -> None:
+        self._watchdog_stop_event.set()
+        super().shutdown()
+
+    def mark_activity(self) -> None:
+        with self._activity_lock:
+            self.last_activity_monotonic = time.monotonic()
+
+    def seconds_since_last_activity(self) -> float:
+        with self._activity_lock:
+            last_activity_monotonic = self.last_activity_monotonic
+        return time.monotonic() - last_activity_monotonic
+
+    def _start_watchdog(self) -> None:
+        with self._watchdog_start_lock:
+            if self._watchdog_thread is not None and self._watchdog_thread.is_alive():
+                return
+            self._watchdog_thread = threading.Thread(
+                target=self._run_watchdog,
+                name="viewer-idle-watchdog",
+                daemon=True,
+            )
+            self._watchdog_thread.start()
+
+    def _run_watchdog(self) -> None:
+        while not self._watchdog_stop_event.wait(self.watchdog_interval_seconds):
+            try:
+                self._watchdog_check_once()
+            except Exception:
+                continue
+
+    def _watchdog_check_once(self) -> bool:
+        try:
+            if self.seconds_since_last_activity() < self.idle_timeout_seconds:
+                return False
+            return self._shutdown_for_idle()
+        except Exception:
+            return False
+
+    def _shutdown_for_idle(self) -> bool:
+        with self._idle_shutdown_lock:
+            if self._idle_shutdown_started:
+                return False
+            self._idle_shutdown_started = True
+        try:
+            self.shutdown()
+        except Exception:
+            with self._idle_shutdown_lock:
+                self._idle_shutdown_started = False
+            raise
+        return True
 
     def build_snapshot_payload(self) -> dict[str, object]:
         with self._snapshot_lock:
@@ -175,6 +270,8 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
+        if is_activity_path(path):
+            self.server.mark_activity()
         if path == "/health":
             self._send_json(200, {"ok": True})
             return
@@ -198,7 +295,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
     def _resolve_static_path(self, path: str) -> Path | None:
         if path.startswith("/static/"):
             relative_path = path.removeprefix("/static/")
-        elif path.count("/") == 1 and "." in path.rsplit("/", 1)[-1]:
+        elif _is_root_asset_alias(path):
             relative_path = path.removeprefix("/")
         else:
             return None
@@ -268,6 +365,8 @@ def create_server(
     host: str = "0.0.0.0",
     port: int = 0,
     state_dir: str | Path | None = None,
+    idle_timeout_seconds: float = DEFAULT_IDLE_TIMEOUT_SECONDS,
+    watchdog_interval_seconds: float = DEFAULT_WATCHDOG_INTERVAL_SECONDS,
 ) -> ViewerServer:
     if not _is_allowed_bind_host(host):
         raise ValueError("Viewer server must bind to a loopback host or 0.0.0.0")
@@ -276,6 +375,8 @@ def create_server(
         (host, port),
         checklist_path=Path(checklist_path),
         state_dir=Path(state_dir) if state_dir is not None else None,
+        idle_timeout_seconds=idle_timeout_seconds,
+        watchdog_interval_seconds=watchdog_interval_seconds,
     )
 
 

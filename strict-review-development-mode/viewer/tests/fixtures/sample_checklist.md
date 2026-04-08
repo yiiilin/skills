@@ -30,7 +30,7 @@
 ## Mermaid DAG
 ```mermaid
 graph TD
-  A[Item 1 - Build parser contract] --> B[Item 2 - Build snapshot contract]
+  A[Parser work] --> B[Snapshot work]
 ```
 
 ## Ready 队列
