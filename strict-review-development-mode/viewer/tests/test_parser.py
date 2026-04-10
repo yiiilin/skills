@@ -151,6 +151,52 @@ class ParseChecklistContractTests(unittest.TestCase):
         self.assertIn("任务重整摘要", parsed.top_level_sections)
         self.assertIn("原始任务", parsed.top_level_sections["任务重整摘要"])
 
+    def test_template_includes_task_identity_section(self) -> None:
+        parsed = parse_file(TEMPLATE_PATH)
+
+        self.assertIn("任务归属判定", parsed.top_level_sections)
+        self.assertIn("判定结果", parsed.top_level_sections["任务归属判定"])
+
+    def test_task_identity_heading_is_optional_but_preserved(self) -> None:
+        parsed = parse_markdown(
+            "# Task Identity Checklist\n\n"
+            "## 模式\n"
+            "- 强审开发模式（DAG-first）\n\n"
+            "## 审核设置\n"
+            "- 审核模型目标：gpt-5.4\n\n"
+            "## 当前执行状态\n"
+            "- 当前状态：进行中\n\n"
+            "## 任务归属判定\n"
+            "- 当前请求：继续修复 parser\n"
+            "- 判定结果：same-task\n"
+            "- 判定依据：用户明确要求继续上次同一任务\n"
+            "- 关联旧 checklist：/abs/path/checklists/parser.md\n\n"
+            "## Checklist\n"
+            "- [ ] 1. Example item\n\n"
+            "## DAG 概览\n"
+            "- 关键串行路径：Item 1\n\n"
+            "## Mermaid DAG\n"
+            "```mermaid\n"
+            "graph TD\n"
+            "  A[Item 1 - Example item]\n"
+            "```\n\n"
+            + make_item(
+                "Item 1 - Example item",
+                [
+                    "- item_id：item-1",
+                    "- blocked_by：[]",
+                    "- blocks：[]",
+                    "- shared_surfaces：[]",
+                    "- parallel_group：wave-1",
+                    "- dispatch_status：ready",
+                    "- assigned_subagent：none",
+                ],
+            )
+        )
+
+        self.assertIn("任务归属判定", parsed.top_level_sections)
+        self.assertIn("same-task", parsed.top_level_sections["任务归属判定"])
+
     def test_task_repartition_summary_heading_is_optional_but_preserved(self) -> None:
         parsed = parse_markdown(
             "# Repartition Checklist\n\n"

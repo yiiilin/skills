@@ -12,6 +12,13 @@
 - 二次探测窗口：5-10min
 - 硬超时门槛：15min
 
+## 任务归属判定
+- 当前请求：<待填写>
+- 判定结果：different-task
+- 判定依据：默认模板用于当前请求的新 checklist；若确认同任务续做，应改为 same-task 并继续既有 checklist
+- 关联旧 checklist：none
+- 处理动作：在当前 checklist 记录本次任务进度；不要向无关旧 checklist 追加工作项
+
 ## 当前执行状态
 - 当前状态：进行中
 - 当前阻塞原因：无

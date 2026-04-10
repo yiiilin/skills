@@ -11,38 +11,60 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 
 以下条件必须同时满足：
 
-1. 开始实施前，必须先把任务落成 checklist 文档，且文档内必须同时包含：总 checklist、item-level DAG、Mermaid DAG 图、每个事项的结构化字段。
-2. 如果原始任务还没有拆成适合多 Agent 并行开发的工作包，必须先重整成 item-level DAG 工作包，再进入实施前基线；如果原始任务已经具备稳定工作包边界，不要为了形式重新拆包。
-3. 每个 checklist 项都必须先写计划，再实施；没有计划就不能进入 `active`。
-4. 调度必须由 DAG 和 `dispatch_status` 驱动，不以书写顺序、口头顺序或队列小节手工描述作为真实调度依据。
-5. `dispatch_status` 是唯一调度真相；允许状态只有：`blocked`、`ready`、`active`、`implemented`、`review-queued`、`in-review`、`changes-requested`、`done`。
-6. 所有队列小节都只是派生视图；每个 cycle 都必须重新读取整个 checklist + DAG，并从结构化字段重新推导未完成事项状态。
-7. 每个 cycle 都必须核对 Mermaid DAG 与结构化字段；如果不一致，以结构化字段为准，并且必须立即修正文档，使 Mermaid、结构化字段、派生队列重新一致。
-8. 每个 cycle 的调度优先级固定为：`changes-requested` -> `review-queued` -> 补满实施槽位。
-9. 实施并发上限固定为 `4`，reviewer 并发上限固定为 `2`；只要存在可达且不冲突的可执行事项，就必须补满到当前可达上限，不能故意少派。
-10. 事项间冲突必须通过 `shared_surfaces` 和 DAG 依赖显式建模；有共享写面、共享契约、共享状态机、共享迁移、共享权限/配置面时，不得同时进入 `active`。
-11. 实施完成后必须记录验证结果；没有验证记录不得进入审核调度。
-12. 每个事项都必须交给独立 subagent 审核，并维护 reviewer 生命周期；优先使用当前可用的最强最新模型，默认目标是 `gpt-5.4` + `xhigh`。
-13. `wait_agent` 单次超时只视为软超时；只有在二次探测后仍无结果，且达到硬超时门槛时，才允许关闭 reviewer 并安排 replacement reviewer。
-14. 只要仍有未完成事项、可执行动作、待处理 reviewer 分配、活跃 reviewer、待处理审查意见，agent 就不得静默停止；只有在“没有任何可执行事项且没有任何 reviewer assignment 可继续推进”时，才允许向用户报告 blocker。
-15. 只有全部事项进入 `done` 后，才允许宣布完成。
+1. 在复用任何既有 checklist 前，必须先做 `任务归属判定`；结果只允许：`same-task`、`different-task`、`uncertain`。
+2. 只有 `same-task` 才允许继续旧 checklist；`different-task` 必须新建 checklist，严禁把新任务工作项追加到旧 checklist。
+3. 若判定为 `uncertain`，必须先问用户一个澄清问题；在澄清前，不得修改任何旧 checklist，也不得创建新 checklist。
+4. 已进入 `done` 的 checklist 视为封存，不得 reopened；后续请求即使相关，也按新任务处理并新建 checklist。
+5. 开始实施前，必须先把任务落成 checklist 文档，且文档内必须同时包含：总 checklist、item-level DAG、Mermaid DAG 图、每个事项的结构化字段。
+6. 如果原始任务还没有拆成适合多 Agent 并行开发的工作包，必须先重整成 item-level DAG 工作包，再进入实施前基线；如果原始任务已经具备稳定工作包边界，不要为了形式重新拆包。
+7. 每个 checklist 项都必须先写计划，再实施；没有计划就不能进入 `active`。
+8. 调度必须由 DAG 和 `dispatch_status` 驱动，不以书写顺序、口头顺序或队列小节手工描述作为真实调度依据。
+9. `dispatch_status` 是唯一调度真相；允许状态只有：`blocked`、`ready`、`active`、`implemented`、`review-queued`、`in-review`、`changes-requested`、`done`。
+10. 所有队列小节都只是派生视图；每个 cycle 都必须重新读取整个 checklist + DAG，并从结构化字段重新推导未完成事项状态。
+11. 每个 cycle 都必须核对 Mermaid DAG 与结构化字段；如果不一致，以结构化字段为准，并且必须立即修正文档，使 Mermaid、结构化字段、派生队列重新一致。
+12. 每个 cycle 的调度优先级固定为：`changes-requested` -> `review-queued` -> 补满实施槽位。
+13. 实施并发上限固定为 `4`，reviewer 并发上限固定为 `2`；只要存在可达且不冲突的可执行事项，就必须补满到当前可达上限，不能故意少派。
+14. 事项间冲突必须通过 `shared_surfaces` 和 DAG 依赖显式建模；有共享写面、共享契约、共享状态机、共享迁移、共享权限/配置面时，不得同时进入 `active`。
+15. 实施完成后必须记录验证结果；没有验证记录不得进入审核调度。
+16. 每个事项都必须交给独立 subagent 审核，并维护 reviewer 生命周期；优先使用当前可用的最强最新模型，默认目标是 `gpt-5.4` + `xhigh`。
+17. `wait_agent` 单次超时只视为软超时；只有在二次探测后仍无结果，且达到硬超时门槛时，才允许关闭 reviewer 并安排 replacement reviewer。
+18. 只要仍有未完成事项、可执行动作、待处理 reviewer 分配、活跃 reviewer、待处理审查意见，agent 就不得静默停止；只有在“没有任何可执行事项且没有任何 reviewer assignment 可继续推进”时，才允许向用户报告 blocker。
+19. 只有全部事项进入 `done` 后，才允许宣布完成。
 
 ## 启动流程
 
-### 1. 先创建 checklist 文档
+### 1. 任务归属判定 gate
+
+在创建或复用 checklist 之前，先检查当前请求与既有 checklist 的关系，并记录到 `任务归属判定`：
+
+- `same-task`：当前请求是在继续同一个目标、同一组验收标准或同一批工作包；只在这种情况下允许继续旧 checklist。
+- `different-task`：当前请求引入了新的目标、新的交付物，或需要追加不属于当前 checklist 原始目标的新工作包；这种情况必须新建 checklist。
+- `uncertain`：无法安全判断是否同一任务；这种情况必须先问用户一个澄清问题。
+
+判定规则：
+
+- 不要因为“还有旧 checklist 存在”就默认继续旧 checklist。
+- 不要因为“主题相关”就判定为 `same-task`；只要需要把新请求作为额外工作项追加进旧 checklist，通常就已经是 `different-task`。
+- 已 `done` 的 checklist 不得 reopened；后续请求统一视为 `different-task`。
+- 只有在明确属于同一任务续做时，才允许进入恢复协议并继续旧 checklist。
+
+### 2. 选择 checklist 文档
 
 默认位置：
 
 - 仓库已有 `docs/` 时，使用 `docs/checklists/`
 - 否则使用仓库根目录下的 `checklists/`
 
-默认文件名：
+- 若判定为 `same-task`：继续既有未完成 checklist，并在文档中更新 `任务归属判定`。
+- 若判定为 `different-task`：创建新 checklist，默认文件名为：
 
-- `<task-slug>.md`
+  - `<task-slug>.md`
+
+- 若判定为 `uncertain`：先向用户澄清，不要修改旧 checklist，也不要预创建新 checklist。
 
 不要只在对话里口头列 checklist，必须落成文档。
 
-### 2. 任务重整 gate
+### 3. 任务重整 gate
 
 在开始任何实施前，先判断原始任务是否已经是适合并行开发的工作包形态：
 
@@ -64,27 +86,29 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 - 并行批次说明
 - 关键不可并行约束
 
-### 3. 创建实施前基线
+### 4. 创建实施前基线
 
 在开始任何实施前，文档里必须先写好：
 
 - 总 checklist
+- `任务归属判定`
 - item-level DAG
 - Mermaid DAG 图
 - 每个事项的结构化字段
 - 每个事项的计划区
 
-### 4. 开始前先同步给用户
+### 5. 开始前先同步给用户
 
 必须说明：
 
 - checklist 文档路径
+- 当前请求的任务归属判定结果（`same-task` / `different-task` / `uncertain`）
 - checklist 项列表
 - 是否触发任务重整；若触发，说明重整结果
 - DAG 摘要
 - 当前 `ready` / `active` / `review-queued` 事项概览
 
-### 5. 初始化调度字段
+### 6. 初始化调度字段
 
 开始实施前，每个事项的结构化字段必须至少包含以下批准字段：
 
@@ -98,7 +122,7 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 
 如需补充实施/验证/审核信息，可额外维护辅助字段（例如 `verification`、`reviewer_id`、`reviewer_state`、`next_action`），但这些都是补充元数据，不能替代上述批准字段作为调度真相。
 
-### 6. 进入 cycle 驱动执行
+### 7. 进入 cycle 驱动执行
 
 每个 cycle 开始时必须：
 
@@ -113,6 +137,7 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 至少包含以下部分：
 
 - 总 checklist
+- `任务归属判定`（新 checklist 必填；复用旧 checklist 时也必须补写或更新；历史遗留 checklist 可暂时缺失，但不能作为继续追加新任务的依据）
 - `任务重整摘要`（可选。仅在发生任务重整时必填；未触发时可省略，或显式写明“无需重整”）
 - item-level DAG 说明
 - Mermaid DAG 图
@@ -414,6 +439,8 @@ python3 strict-review-development-mode/viewer/serve.py --checklist <checklist-pa
 ## 中断与恢复协议
 
 若会话因中断、超时、上下文漂移、reviewer 替换或其他原因恢复，必须先执行恢复协议，再继续推进：
+
+恢复协议只适用于当前请求已被判定为 `same-task` 的情况。若当前请求属于 `different-task`，必须新建 checklist，不得借“恢复”之名往旧 checklist 追加新工作项。
 
 1. 重新读取整个 checklist 文档，而不是只读当前事项小节。
 2. 重新核对 item-level DAG、Mermaid、结构化字段，并立即修正不一致处；以结构化字段为准。
