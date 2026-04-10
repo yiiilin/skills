@@ -145,6 +145,50 @@ class ParseChecklistContractTests(unittest.TestCase):
         for item in parsed.items:
             self.assertTrue(CONTRACT_FIELD_NAMES.issubset(item.structured_fields))
 
+    def test_template_includes_task_repartition_summary_section(self) -> None:
+        parsed = parse_file(TEMPLATE_PATH)
+
+        self.assertIn("任务重整摘要", parsed.top_level_sections)
+        self.assertIn("原始任务", parsed.top_level_sections["任务重整摘要"])
+
+    def test_task_repartition_summary_heading_is_optional_but_preserved(self) -> None:
+        parsed = parse_markdown(
+            "# Repartition Checklist\n\n"
+            "## 模式\n"
+            "- 强审开发模式（DAG-first）\n\n"
+            "## 审核设置\n"
+            "- 审核模型目标：gpt-5.4\n\n"
+            "## 当前执行状态\n"
+            "- 当前状态：进行中\n\n"
+            "## 任务重整摘要\n"
+            "- 原始任务：单块需求，尚未拆包\n"
+            "- 重整结果：拆为 item-1 与 item-2 两个工作包\n\n"
+            "## Checklist\n"
+            "- [ ] 1. Example item\n\n"
+            "## DAG 概览\n"
+            "- 关键串行路径：Item 1\n\n"
+            "## Mermaid DAG\n"
+            "```mermaid\n"
+            "graph TD\n"
+            "  A[Item 1 - Example item]\n"
+            "```\n\n"
+            + make_item(
+                "Item 1 - Example item",
+                [
+                    "- item_id：item-1",
+                    "- blocked_by：[]",
+                    "- blocks：[]",
+                    "- shared_surfaces：[]",
+                    "- parallel_group：wave-1",
+                    "- dispatch_status：ready",
+                    "- assigned_subagent：none",
+                ],
+            )
+        )
+
+        self.assertIn("任务重整摘要", parsed.top_level_sections)
+        self.assertIn("拆为 item-1 与 item-2 两个工作包", parsed.top_level_sections["任务重整摘要"])
+
     def test_template_initial_dispatch_status_matches_dependency_reachability(self) -> None:
         parsed = parse_file(TEMPLATE_PATH)
 

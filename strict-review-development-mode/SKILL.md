@@ -12,19 +12,20 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 以下条件必须同时满足：
 
 1. 开始实施前，必须先把任务落成 checklist 文档，且文档内必须同时包含：总 checklist、item-level DAG、Mermaid DAG 图、每个事项的结构化字段。
-2. 每个 checklist 项都必须先写计划，再实施；没有计划就不能进入 `active`。
-3. 调度必须由 DAG 和 `dispatch_status` 驱动，不以书写顺序、口头顺序或队列小节手工描述作为真实调度依据。
-4. `dispatch_status` 是唯一调度真相；允许状态只有：`blocked`、`ready`、`active`、`implemented`、`review-queued`、`in-review`、`changes-requested`、`done`。
-5. 所有队列小节都只是派生视图；每个 cycle 都必须重新读取整个 checklist + DAG，并从结构化字段重新推导未完成事项状态。
-6. 每个 cycle 都必须核对 Mermaid DAG 与结构化字段；如果不一致，以结构化字段为准，并且必须立即修正文档，使 Mermaid、结构化字段、派生队列重新一致。
-7. 每个 cycle 的调度优先级固定为：`changes-requested` -> `review-queued` -> 补满实施槽位。
-8. 实施并发上限固定为 `4`，reviewer 并发上限固定为 `2`；只要存在可达且不冲突的可执行事项，就必须补满到当前可达上限，不能故意少派。
-9. 事项间冲突必须通过 `shared_surfaces` 和 DAG 依赖显式建模；有共享写面、共享契约、共享状态机、共享迁移、共享权限/配置面时，不得同时进入 `active`。
-10. 实施完成后必须记录验证结果；没有验证记录不得进入审核调度。
-11. 每个事项都必须交给独立 subagent 审核，并维护 reviewer 生命周期；优先使用当前可用的最强最新模型，默认目标是 `gpt-5.4` + `xhigh`。
-12. `wait_agent` 单次超时只视为软超时；只有在二次探测后仍无结果，且达到硬超时门槛时，才允许关闭 reviewer 并安排 replacement reviewer。
-13. 只要仍有未完成事项、可执行动作、待处理 reviewer 分配、活跃 reviewer、待处理审查意见，agent 就不得静默停止；只有在“没有任何可执行事项且没有任何 reviewer assignment 可继续推进”时，才允许向用户报告 blocker。
-14. 只有全部事项进入 `done` 后，才允许宣布完成。
+2. 如果原始任务还没有拆成适合多 Agent 并行开发的工作包，必须先重整成 item-level DAG 工作包，再进入实施前基线；如果原始任务已经具备稳定工作包边界，不要为了形式重新拆包。
+3. 每个 checklist 项都必须先写计划，再实施；没有计划就不能进入 `active`。
+4. 调度必须由 DAG 和 `dispatch_status` 驱动，不以书写顺序、口头顺序或队列小节手工描述作为真实调度依据。
+5. `dispatch_status` 是唯一调度真相；允许状态只有：`blocked`、`ready`、`active`、`implemented`、`review-queued`、`in-review`、`changes-requested`、`done`。
+6. 所有队列小节都只是派生视图；每个 cycle 都必须重新读取整个 checklist + DAG，并从结构化字段重新推导未完成事项状态。
+7. 每个 cycle 都必须核对 Mermaid DAG 与结构化字段；如果不一致，以结构化字段为准，并且必须立即修正文档，使 Mermaid、结构化字段、派生队列重新一致。
+8. 每个 cycle 的调度优先级固定为：`changes-requested` -> `review-queued` -> 补满实施槽位。
+9. 实施并发上限固定为 `4`，reviewer 并发上限固定为 `2`；只要存在可达且不冲突的可执行事项，就必须补满到当前可达上限，不能故意少派。
+10. 事项间冲突必须通过 `shared_surfaces` 和 DAG 依赖显式建模；有共享写面、共享契约、共享状态机、共享迁移、共享权限/配置面时，不得同时进入 `active`。
+11. 实施完成后必须记录验证结果；没有验证记录不得进入审核调度。
+12. 每个事项都必须交给独立 subagent 审核，并维护 reviewer 生命周期；优先使用当前可用的最强最新模型，默认目标是 `gpt-5.4` + `xhigh`。
+13. `wait_agent` 单次超时只视为软超时；只有在二次探测后仍无结果，且达到硬超时门槛时，才允许关闭 reviewer 并安排 replacement reviewer。
+14. 只要仍有未完成事项、可执行动作、待处理 reviewer 分配、活跃 reviewer、待处理审查意见，agent 就不得静默停止；只有在“没有任何可执行事项且没有任何 reviewer assignment 可继续推进”时，才允许向用户报告 blocker。
+15. 只有全部事项进入 `done` 后，才允许宣布完成。
 
 ## 启动流程
 
@@ -41,7 +42,29 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 
 不要只在对话里口头列 checklist，必须落成文档。
 
-### 2. 创建实施前基线
+### 2. 任务重整 gate
+
+在开始任何实施前，先判断原始任务是否已经是适合并行开发的工作包形态：
+
+- 如果原始任务已经具备清晰的 item-level DAG、文件边界、验证边界和共享面约束，就沿用现有拆分，不要为了“更像并行”而重整。
+- 如果原始任务仍是单块需求、线性描述、口头子任务列表，或其现有拆分不足以安全并行，就必须先重整成适合多 Agent 并行开发的工作包，再继续后续流程。
+
+任务重整后的每个工作包至少要满足：
+
+- 能明确指定文件或模块 ownership
+- 能单独写计划、实施、验证和审核
+- 能明确列出 `shared_surfaces`
+- 能解释为什么可并行，或为什么必须阻塞
+
+若发生任务重整，必须在 checklist 中记录 `任务重整摘要`，至少包含：
+
+- 原始任务形态
+- 触发重整的原因
+- 重整后的工作包映射
+- 并行批次说明
+- 关键不可并行约束
+
+### 3. 创建实施前基线
 
 在开始任何实施前，文档里必须先写好：
 
@@ -51,16 +74,17 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 - 每个事项的结构化字段
 - 每个事项的计划区
 
-### 3. 开始前先同步给用户
+### 4. 开始前先同步给用户
 
 必须说明：
 
 - checklist 文档路径
 - checklist 项列表
+- 是否触发任务重整；若触发，说明重整结果
 - DAG 摘要
 - 当前 `ready` / `active` / `review-queued` 事项概览
 
-### 4. 初始化调度字段
+### 5. 初始化调度字段
 
 开始实施前，每个事项的结构化字段必须至少包含以下批准字段：
 
@@ -74,7 +98,7 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 
 如需补充实施/验证/审核信息，可额外维护辅助字段（例如 `verification`、`reviewer_id`、`reviewer_state`、`next_action`），但这些都是补充元数据，不能替代上述批准字段作为调度真相。
 
-### 5. 进入 cycle 驱动执行
+### 6. 进入 cycle 驱动执行
 
 每个 cycle 开始时必须：
 
@@ -89,6 +113,7 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 至少包含以下部分：
 
 - 总 checklist
+- `任务重整摘要`（可选。仅在发生任务重整时必填；未触发时可省略，或显式写明“无需重整”）
 - item-level DAG 说明
 - Mermaid DAG 图
 - 每一项的结构化字段区
