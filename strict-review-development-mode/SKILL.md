@@ -357,9 +357,9 @@ python3 strict-review-development-mode/viewer/serve.py --checklist <checklist-pa
 
 推荐默认阈值：
 
-- 首次等待窗口：`5` 分钟
-- 二次探测窗口：再等 `5-10` 分钟
-- 硬超时门槛：累计等待至少 `15` 分钟，且至少连续 `2` 次 `wait_agent` 超时
+- 首次等待窗口：`10` 分钟
+- 二次探测窗口：再等 `10-20` 分钟
+- 硬超时门槛：累计等待至少 `30` 分钟，且至少连续 `2` 次 `wait_agent` 超时
 
 推荐 reviewer_state：
 
