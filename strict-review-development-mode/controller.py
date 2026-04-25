@@ -38,6 +38,7 @@ PLACEHOLDER_VALUES = {
     "n/a",
     "无",
     "待填写",
+    "<待填写>",
     "未开始",
     "not-started",
     "no content recorded.",
@@ -145,6 +146,13 @@ class DispatchPacket:
     invocation_policy: str
     item_id: str
     title: str
+    workflow_goal: str
+    agent_objective: str
+    local_scope: List[str]
+    success_criteria: List[str]
+    non_goals: List[str]
+    handoff_requirements: List[str]
+    input_artifacts: Dict[str, object]
     command: str
     prompt: str
     shared_surfaces: List[str]
@@ -161,6 +169,13 @@ class DispatchPacket:
             "invocation_policy": self.invocation_policy,
             "item_id": self.item_id,
             "title": self.title,
+            "workflow_goal": self.workflow_goal,
+            "agent_objective": self.agent_objective,
+            "local_scope": self.local_scope,
+            "success_criteria": self.success_criteria,
+            "non_goals": self.non_goals,
+            "handoff_requirements": self.handoff_requirements,
+            "input_artifacts": self.input_artifacts,
             "command": self.command,
             "prompt": self.prompt,
             "shared_surfaces": self.shared_surfaces,
@@ -209,8 +224,9 @@ def build_cycle_plan(checklist_path: Union[str, Path]) -> Dict[str, object]:
     has_errors = any(violation.severity == "error" for violation in violations)
     item_by_id = _item_by_id(items)
     agent_routing = _agent_routing_policy(parsed)
+    workflow_context = _workflow_context(parsed)
     status_updates = [] if has_errors else _recommended_status_updates(items, item_by_id)
-    packets = [] if has_errors else _build_dispatch_packets(Path(checklist_path), items, item_by_id, agent_routing)
+    packets = [] if has_errors else _build_dispatch_packets(Path(checklist_path), items, item_by_id, agent_routing, workflow_context)
     active_items = [item["item_id"] for item in items if item.get("dispatch_status") == "active"]
     reviewing_items = [item["item_id"] for item in items if item.get("dispatch_status") == "in-review"]
     return {
@@ -223,6 +239,7 @@ def build_cycle_plan(checklist_path: Union[str, Path]) -> Dict[str, object]:
         "active_items": active_items,
         "in_review_items": reviewing_items,
         "agent_routing": agent_routing,
+        "workflow_context": workflow_context,
         "status_updates": status_updates,
         "dispatch_packets": [packet.to_dict() for packet in packets],
         "next_action": _next_action_text(status_updates, packets, violations),
@@ -745,6 +762,24 @@ def _agent_routing_policy(parsed: Any) -> Dict[str, str]:
     return policy
 
 
+def _workflow_context(parsed: Any) -> Dict[str, str]:
+    top_level_sections = getattr(parsed, "top_level_sections", {})
+    assignment_text = top_level_sections.get("任务归属判定", "")
+    restructuring_text = top_level_sections.get("任务重整摘要", "")
+    status_text = top_level_sections.get("当前执行状态", "")
+    current_request = _meaningful_text(_extract_bullet_value(assignment_text, "当前请求"))
+    work_mapping = _meaningful_text(_extract_bullet_value(restructuring_text, "工作包映射"))
+    parallel_summary = _meaningful_text(_extract_bullet_value(restructuring_text, "并行批次说明"))
+    current_summary = _meaningful_text(_extract_bullet_value(status_text, "当前调度摘要"))
+    return {
+        "current_request": current_request,
+        "workflow_goal": current_request or "完成当前 checklist 记录的大任务",
+        "work_mapping": work_mapping,
+        "parallel_summary": parallel_summary,
+        "current_summary": current_summary,
+    }
+
+
 def _resolve_agent_route(
     packet_type: str,
     item: Dict[str, Any],
@@ -794,11 +829,18 @@ def _agent_name(value: Any) -> str:
     return text
 
 
+def _meaningful_text(value: Any) -> str:
+    if value is None or _is_blankish(value):
+        return ""
+    return str(value).strip()
+
+
 def _build_dispatch_packets(
     checklist_path: Path,
     items: List[Dict[str, Any]],
     item_by_id: Dict[str, Dict[str, Any]],
     agent_routing: Dict[str, str],
+    workflow_context: Dict[str, str],
 ) -> List[DispatchPacket]:
     packets: List[DispatchPacket] = []
     active_count = sum(1 for item in items if item.get("dispatch_status") == "active")
@@ -816,9 +858,9 @@ def _build_dispatch_packets(
         if surfaces.intersection(active_surfaces | selected_surfaces):
             continue
         if _is_blankish(item.get("plan")):
-            packets.append(_planning_packet(checklist_path, item, "replan", agent_routing))
+            packets.append(_planning_packet(checklist_path, item, "replan", agent_routing, workflow_context))
         else:
-            packets.append(_implementation_packet(checklist_path, item, "rework", agent_routing))
+            packets.append(_implementation_packet(checklist_path, item, "rework", agent_routing, workflow_context))
         selected_surfaces.update(surfaces)
         active_count += 1
 
@@ -829,7 +871,7 @@ def _build_dispatch_packets(
             break
         if _is_blankish(item.get("implementation_record")) or _is_blankish(item.get("verification_record")):
             continue
-        packets.append(_review_packet(checklist_path, item, agent_routing))
+        packets.append(_review_packet(checklist_path, item, agent_routing, workflow_context))
         reviewer_count += 1
 
     for item in items:
@@ -843,9 +885,9 @@ def _build_dispatch_packets(
         if surfaces.intersection(active_surfaces | selected_surfaces):
             continue
         if _is_blankish(item.get("plan")):
-            packets.append(_planning_packet(checklist_path, item, "planning", agent_routing))
+            packets.append(_planning_packet(checklist_path, item, "planning", agent_routing, workflow_context))
         else:
-            packets.append(_implementation_packet(checklist_path, item, "implementation", agent_routing))
+            packets.append(_implementation_packet(checklist_path, item, "implementation", agent_routing, workflow_context))
         selected_surfaces.update(surfaces)
         active_count += 1
 
@@ -857,6 +899,7 @@ def _planning_packet(
     item: Dict[str, Any],
     packet_type: str,
     agent_routing: Dict[str, str],
+    workflow_context: Dict[str, str],
 ) -> DispatchPacket:
     item_id = _item_id(item)
     title = str(item.get("title") or item.get("heading") or item_id)
@@ -866,6 +909,7 @@ def _planning_packet(
         "shared_surfaces、并行性、验证方式和风险边界；写好后用 controller plan 写回。"
     )
     route = _resolve_agent_route(packet_type, item, agent_routing)
+    contract = _planning_contract(item, packet_type, workflow_context)
     return DispatchPacket(
         packet_type=packet_type,
         role=route["role"],
@@ -875,6 +919,13 @@ def _planning_packet(
         invocation_policy=INVOCATION_POLICY,
         item_id=item_id,
         title=title,
+        workflow_goal=contract["workflow_goal"],
+        agent_objective=contract["agent_objective"],
+        local_scope=contract["local_scope"],
+        success_criteria=contract["success_criteria"],
+        non_goals=contract["non_goals"],
+        handoff_requirements=contract["handoff_requirements"],
+        input_artifacts=contract["input_artifacts"],
         command=command,
         prompt=prompt,
         shared_surfaces=list(item.get("shared_surfaces") or []),
@@ -888,6 +939,7 @@ def _implementation_packet(
     item: Dict[str, Any],
     packet_type: str,
     agent_routing: Dict[str, str],
+    workflow_context: Dict[str, str],
 ) -> DispatchPacket:
     item_id = _item_id(item)
     title = str(item.get("title") or item.get("heading") or item_id)
@@ -897,6 +949,7 @@ def _implementation_packet(
         "写入实施记录和验证记录。"
     )
     route = _resolve_agent_route(packet_type, item, agent_routing)
+    contract = _implementation_contract(item, packet_type, workflow_context)
     return DispatchPacket(
         packet_type=packet_type,
         role=route["role"],
@@ -906,6 +959,13 @@ def _implementation_packet(
         invocation_policy=INVOCATION_POLICY,
         item_id=item_id,
         title=title,
+        workflow_goal=contract["workflow_goal"],
+        agent_objective=contract["agent_objective"],
+        local_scope=contract["local_scope"],
+        success_criteria=contract["success_criteria"],
+        non_goals=contract["non_goals"],
+        handoff_requirements=contract["handoff_requirements"],
+        input_artifacts=contract["input_artifacts"],
         command=command,
         prompt=prompt,
         shared_surfaces=list(item.get("shared_surfaces") or []),
@@ -914,7 +974,12 @@ def _implementation_packet(
     )
 
 
-def _review_packet(checklist_path: Path, item: Dict[str, Any], agent_routing: Dict[str, str]) -> DispatchPacket:
+def _review_packet(
+    checklist_path: Path,
+    item: Dict[str, Any],
+    agent_routing: Dict[str, str],
+    workflow_context: Dict[str, str],
+) -> DispatchPacket:
     item_id = _item_id(item)
     title = str(item.get("title") or item.get("heading") or item_id)
     command = f"python3 {CONTROLLER_PATH} assign-reviewer --checklist {checklist_path} --item {item_id} --reviewer <reviewer-id>"
@@ -923,6 +988,7 @@ def _review_packet(checklist_path: Path, item: Dict[str, Any], agent_routing: Di
         "若有问题用 request-changes，若通过用 approve。"
     )
     route = _resolve_agent_route("review", item, agent_routing)
+    contract = _review_contract(item, workflow_context)
     return DispatchPacket(
         packet_type="review",
         role=route["role"],
@@ -932,12 +998,178 @@ def _review_packet(checklist_path: Path, item: Dict[str, Any], agent_routing: Di
         invocation_policy=INVOCATION_POLICY,
         item_id=item_id,
         title=title,
+        workflow_goal=contract["workflow_goal"],
+        agent_objective=contract["agent_objective"],
+        local_scope=contract["local_scope"],
+        success_criteria=contract["success_criteria"],
+        non_goals=contract["non_goals"],
+        handoff_requirements=contract["handoff_requirements"],
+        input_artifacts=contract["input_artifacts"],
         command=command,
         prompt=prompt,
         shared_surfaces=list(item.get("shared_surfaces") or []),
         blocked_by=list(item.get("blocked_by") or []),
         blocks=list(item.get("blocks") or []),
     )
+
+
+def _planning_contract(item: Dict[str, Any], packet_type: str, workflow_context: Dict[str, str]) -> Dict[str, Any]:
+    item_id = _item_id(item)
+    title = str(item.get("title") or item.get("heading") or item_id)
+    return _packet_contract(
+        item,
+        workflow_context,
+        f"为 {item_id} - {title} 产出可执行计划，让后续实施 agent 能只按本 item 推进。",
+        [
+            "计划写清改动范围、文件 ownership、DAG 依赖、shared_surfaces、并行性、验证方式和风险边界",
+            "计划能被 implementation agent 直接执行，不需要重新理解整个大任务",
+            "计划通过 controller plan 写回 checklist",
+        ],
+        [
+            "不要直接实施代码或修改项目文件",
+            "不要重排无关 item 的 DAG",
+        ],
+        [
+            "输出计划正文",
+            "使用 packet.command 对应的 controller plan 命令写回",
+        ],
+        _input_artifacts(item, workflow_context, include_plan=False, include_review=packet_type == "replan"),
+    )
+
+
+def _implementation_contract(item: Dict[str, Any], packet_type: str, workflow_context: Dict[str, str]) -> Dict[str, Any]:
+    item_id = _item_id(item)
+    title = str(item.get("title") or item.get("heading") or item_id)
+    action = "返工修复" if packet_type == "rework" else "实施"
+    return _packet_contract(
+        item,
+        workflow_context,
+        f"按已写入计划{action} {item_id} - {title}，完成本 item 的实现与验证闭环。",
+        [
+            "只修改本 item 计划覆盖的范围",
+            "完成必要验证并记录可复现的验证结果",
+            "实施记录说明改了什么，验证记录说明如何证明它已完成",
+            "完成后通过 controller mark-implemented 写回实施记录和验证记录",
+        ],
+        [
+            "不要处理其他 item",
+            "不要重新定义本 item 目标；计划不清时报告 blocker",
+            "不要自行进入审核或批准自己的实现",
+        ],
+        [
+            "先使用 packet.command 对应的 controller start 命令领取本 item",
+            "完成后使用 controller mark-implemented 写回实施记录和验证记录",
+        ],
+        _input_artifacts(item, workflow_context, include_plan=True, include_review=packet_type == "rework"),
+    )
+
+
+def _review_contract(item: Dict[str, Any], workflow_context: Dict[str, str]) -> Dict[str, Any]:
+    item_id = _item_id(item)
+    title = str(item.get("title") or item.get("heading") or item_id)
+    return _packet_contract(
+        item,
+        workflow_context,
+        f"独立审核 {item_id} - {title} 是否按计划完成，并决定通过或要求修改。",
+        [
+            "审核计划、实施记录、验证记录是否一致",
+            "确认实现没有越过本 item 范围或破坏 shared_surfaces 约束",
+            "发现问题时给出明确修改要求并使用 request-changes 写回",
+            "确认通过时给出明确通过结论并使用 approve 关闭 item",
+        ],
+        [
+            "不要直接修代码",
+            "不要审核无关 item",
+            "不要放宽计划或验证标准来迁就实现结果",
+        ],
+        [
+            "先使用 packet.command 对应的 controller assign-reviewer 命令领取审核",
+            "不通过时用 controller request-changes 写回审核意见",
+            "通过时用 controller approve 写回通过结论",
+        ],
+        _input_artifacts(
+            item,
+            workflow_context,
+            include_plan=True,
+            include_implementation=True,
+            include_verification=True,
+            include_review=False,
+        ),
+    )
+
+
+def _packet_contract(
+    item: Dict[str, Any],
+    workflow_context: Dict[str, str],
+    agent_objective: str,
+    success_criteria: List[str],
+    role_non_goals: List[str],
+    handoff_requirements: List[str],
+    input_artifacts: Dict[str, object],
+) -> Dict[str, Any]:
+    non_goals = [
+        "不要操心全局调度、其他 agent 分工或未分配给本 item 的事项",
+        "不要手改 dispatch_status、assigned_subagent、reviewer_id、reviewer_state 或 checklist 勾选状态",
+    ]
+    non_goals.extend(role_non_goals)
+    return {
+        "workflow_goal": workflow_context.get("workflow_goal") or "完成当前 checklist 记录的大任务",
+        "agent_objective": agent_objective,
+        "local_scope": _local_scope(item),
+        "success_criteria": success_criteria,
+        "non_goals": non_goals,
+        "handoff_requirements": handoff_requirements,
+        "input_artifacts": input_artifacts,
+    }
+
+
+def _local_scope(item: Dict[str, Any]) -> List[str]:
+    item_id = _item_id(item)
+    title = str(item.get("title") or item.get("heading") or item_id)
+    scope = [f"只处理 {item_id} - {title}"]
+    blocked_by = list(item.get("blocked_by") or [])
+    blocks = list(item.get("blocks") or [])
+    shared_surfaces = list(item.get("shared_surfaces") or [])
+    if blocked_by:
+        scope.append("上游依赖：" + _format_list(blocked_by))
+    if blocks:
+        scope.append("下游影响：" + _format_list(blocks))
+    if shared_surfaces:
+        scope.append("共享面：" + _format_list(shared_surfaces))
+    return scope
+
+
+def _input_artifacts(
+    item: Dict[str, Any],
+    workflow_context: Dict[str, str],
+    include_plan: bool = False,
+    include_implementation: bool = False,
+    include_verification: bool = False,
+    include_review: bool = False,
+) -> Dict[str, object]:
+    artifacts: Dict[str, object] = {
+        "workflow_context": workflow_context,
+        "item_id": _item_id(item),
+        "title": str(item.get("title") or item.get("heading") or _item_id(item)),
+        "blocked_by": list(item.get("blocked_by") or []),
+        "blocks": list(item.get("blocks") or []),
+        "shared_surfaces": list(item.get("shared_surfaces") or []),
+    }
+    if include_plan:
+        _add_artifact(artifacts, "plan", item.get("plan"))
+    if include_implementation:
+        _add_artifact(artifacts, "implementation_record", item.get("implementation_record"))
+    if include_verification:
+        _add_artifact(artifacts, "verification_record", item.get("verification_record"))
+    if include_review:
+        _add_artifact(artifacts, "review_record", item.get("review_record"))
+    return artifacts
+
+
+def _add_artifact(artifacts: Dict[str, object], key: str, value: Any) -> None:
+    text = _meaningful_text(value)
+    if text:
+        artifacts[key] = text
 
 
 def _next_action_text(

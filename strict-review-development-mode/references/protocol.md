@@ -119,6 +119,18 @@ packet 包含路由字段：
 
 `invocation_policy` 固定为 `coordinator-decides`，表示 controller 只给出路由意图，不规定外部 agent 调用参数。
 
+packet 还必须包含本 item 的敏捷 ticket 合同：
+
+- `workflow_goal`：当前大任务目的
+- `agent_objective`：本 agent 在本 packet 中唯一需要完成的目标
+- `local_scope`：本 item 局部范围、依赖和 shared_surfaces
+- `success_criteria`：完成标准
+- `non_goals`：不需要处理的事项，包括其他 item 和全局调度
+- `handoff_requirements`：完成后要交付或写回的内容
+- `input_artifacts`：本角色需要看的最小上下文
+
+coordinator 派发工作时，应把这些字段连同 `prompt` 一起给目标 agent。目标 agent 像领取敏捷 ticket 一样执行：理解大任务目的，但只完成自己的局部目标。
+
 ## shared_surfaces 冲突
 
 `shared_surfaces` 必须列出可能引发调度冲突的共享面，例如：

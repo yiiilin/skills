@@ -40,6 +40,8 @@
 
 coordinator 不需要在每次启动时主动询问 agent 选择；如果用户主动说明“规划/开发/审核分别用哪个 agent”或“某个 item 用哪个 agent”，coordinator 使用 `controller.py set-routing` 写入全局或 item 级路由，之后 `cycle --json` 会自动在 packet 中带出对应 `target_agent`。
 
+每个 `dispatch_packet` 同时是一张敏捷 ticket：包含大任务目的、该 agent 的局部目标、范围、完成标准、非目标和最小上下文。目标 agent 只需要完成这张 ticket，不需要操心其他 item 或全局调度。
+
 目录内容：
 
 - `strict-review-development-mode/SKILL.md`

@@ -131,8 +131,17 @@ packet 是 C 方案的通用接口。controller 不直接调用任何平台私�
 - `fallback_agent`：目标不可用时的回退
 - `routing_source`：路由来自全局策略还是 item 覆盖
 - `invocation_policy`：固定为 `coordinator-decides`
+- `workflow_goal`：当前大任务目的，让 agent 知道本 item 服务于什么目标
+- `agent_objective`：该 agent 在本 packet 中唯一需要完成的目标
+- `local_scope`：本 item 的局部范围、依赖和 shared_surfaces
+- `success_criteria`：本 packet 的完成标准
+- `non_goals`：明确不用操心的事项，尤其是其他 item 和全局调度
+- `handoff_requirements`：完成后要交付或写回的内容
+- `input_artifacts`：本角色需要看的最小上下文，例如计划、实施记录、验证记录或审核意见
 - `prompt`：工作包说明
 - `command`：结果写回 controller 时的建议命令
+
+coordinator 派发 packet 时，应把这些字段作为敏捷 ticket 一起交给目标 agent。目标 agent 只对 `agent_objective` 和 `success_criteria` 负责，不需要处理 `non_goals` 中列出的事项。
 
 ## 何时读取参考文档
 

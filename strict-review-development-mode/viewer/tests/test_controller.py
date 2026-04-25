@@ -284,6 +284,43 @@ class ControllerValidationTests(unittest.TestCase):
         self.assertNotIn("model", packets[0])
         self.assertNotIn("temperature", packets[0])
 
+    def test_dispatch_packets_include_agile_ticket_contract(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(1, "item-1", "One", status="ready", plan="- 待填写"),
+                make_item(
+                    2,
+                    "item-2",
+                    "Two",
+                    status="implemented",
+                    blocks="[item-4]",
+                    implementation="- 已实现登录校验",
+                    verification="- 已运行认证测试",
+                ),
+                make_item(3, "item-3", "Three", status="ready", plan="- 计划：只修改 three.py"),
+                make_item(4, "item-4", "Four", status="blocked", blocked_by="[item-2]"),
+            )
+        )
+
+        payload = controller.build_cycle_plan(path)
+
+        packets = payload["dispatch_packets"]
+        packet_by_type = {packet["packet_type"]: packet for packet in packets}
+        self.assertEqual("测试 controller", packets[0]["workflow_goal"])
+        self.assertIn("不要操心全局调度", packets[0]["non_goals"][0])
+        self.assertIn("只处理", packets[0]["local_scope"][0])
+        self.assertIn("agent_objective", packets[0])
+        self.assertIn("success_criteria", packets[0])
+        self.assertIn("handoff_requirements", packets[0])
+
+        planning_packet = packet_by_type["planning"]
+        implementation_packet = packet_by_type["implementation"]
+        review_packet = packet_by_type["review"]
+        self.assertIn("不要直接实施代码", "\n".join(planning_packet["non_goals"]))
+        self.assertIn("plan", implementation_packet["input_artifacts"])
+        self.assertIn("implementation_record", review_packet["input_artifacts"])
+        self.assertIn("verification_record", review_packet["input_artifacts"])
+
     def test_item_agent_override_wins_over_global_policy(self) -> None:
         routing = textwrap.dedent(
             """\
