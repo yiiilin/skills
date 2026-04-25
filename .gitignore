@@ -1,2 +1,5 @@
 .worktrees/
 docs/
+
+# 强审 skill 的 eval 运行产物，不进入版本库。
+strict-review-development-mode-workspace/

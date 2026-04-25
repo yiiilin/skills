@@ -96,24 +96,13 @@ agent 名称只作为不透明字符串透传，例如 `codex`、`claude`、`gem
 
 ## 状态转换图
 
-```mermaid
-stateDiagram-v2
-  [*] --> blocked: 有未完成依赖
-  [*] --> ready: 无依赖或依赖已 done
-  blocked --> ready: cycle --write / 上游 done
-  ready --> ready: planning packet / controller plan
-  ready --> active: controller start
-  active --> implemented: controller mark-implemented
-  implemented --> review_queued: controller queue-review
-  implemented --> in_review: controller assign-reviewer / reviewer 槽位可用
-  review_queued --> in_review: controller assign-reviewer
-  in_review --> in_review: controller replace-reviewer / reviewer 超时
-  in_review --> changes_requested: controller request-changes
-  changes_requested --> active: controller start / rework
-  changes_requested --> implemented: controller mark-implemented / 补验证
-  in_review --> done: controller approve
-  done --> [*]
+状态图只维护一份，避免文档漂移。需要查看时运行：
+
+```bash
+python3 strict-review-development-mode/controller.py diagram
 ```
+
+完整图和状态语义见 `references/workflow-state-machine.md`。
 
 ## dispatch_packets 语义
 
