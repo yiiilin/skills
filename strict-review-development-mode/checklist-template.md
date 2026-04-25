@@ -1,7 +1,7 @@
 # <任务标题>
 
 ## 模式
-- 强审开发模式（DAG-first）
+- 强审开发模式（controller-enforced DAG-first）
 
 ## 审核设置
 - 审核模型目标：gpt-5.4

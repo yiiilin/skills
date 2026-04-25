@@ -1,480 +1,108 @@
 ---
 name: strict-review-development-mode
-description: Use when the user explicitly asks for 强审开发模式, 使用强审开发, 按强审开发执行, 进入强审开发模式, or an equivalent strict review workflow for implementation tasks.
+description: Use when the user explicitly asks for 强审开发模式, 使用强审开发, 按强审开发执行, 进入强审开发模式, or asks for a strict controller-enforced implementation workflow with checklist, DAG, parallel implementation, independent review, or reviewer gating.
 ---
 
 # 强审开发模式
 
-这是强约束执行模式，不是建议清单。
-
-## 核心规则
-
-以下条件必须同时满足：
-
-1. 在复用任何既有 checklist 前，必须先做 `任务归属判定`；结果只允许：`same-task`、`different-task`、`uncertain`。
-2. 只有 `same-task` 才允许继续旧 checklist；`different-task` 必须新建 checklist，严禁把新任务工作项追加到旧 checklist。
-3. 若判定为 `uncertain`，必须先问用户一个澄清问题；在澄清前，不得修改任何旧 checklist，也不得创建新 checklist。
-4. 已进入 `done` 的 checklist 视为封存，不得 reopened；后续请求即使相关，也按新任务处理并新建 checklist。
-5. 开始实施前，必须先把任务落成 checklist 文档，且文档内必须同时包含：总 checklist、item-level DAG、Mermaid DAG 图、每个事项的结构化字段。
-6. 如果原始任务还没有拆成适合多 Agent 并行开发的工作包，必须先重整成 item-level DAG 工作包，再进入实施前基线；如果原始任务已经具备稳定工作包边界，不要为了形式重新拆包。
-7. 每个 checklist 项都必须先写计划，再实施；没有计划就不能进入 `active`。
-8. 调度必须由 DAG 和 `dispatch_status` 驱动，不以书写顺序、口头顺序或队列小节手工描述作为真实调度依据。
-9. `dispatch_status` 是唯一调度真相；允许状态只有：`blocked`、`ready`、`active`、`implemented`、`review-queued`、`in-review`、`changes-requested`、`done`。
-10. 所有队列小节都只是派生视图；每个 cycle 都必须重新读取整个 checklist + DAG，并从结构化字段重新推导未完成事项状态。
-11. 每个 cycle 都必须核对 Mermaid DAG 与结构化字段；如果不一致，以结构化字段为准，并且必须立即修正文档，使 Mermaid、结构化字段、派生队列重新一致。
-12. 每个 cycle 的调度优先级固定为：`changes-requested` -> `review-queued` -> 补满实施槽位。
-13. 实施并发上限固定为 `4`，reviewer 并发上限固定为 `2`；只要存在可达且不冲突的可执行事项，就必须补满到当前可达上限，不能故意少派。
-14. 事项间冲突必须通过 `shared_surfaces` 和 DAG 依赖显式建模；有共享写面、共享契约、共享状态机、共享迁移、共享权限/配置面时，不得同时进入 `active`。
-15. 实施完成后必须记录验证结果；没有验证记录不得进入审核调度。
-16. 每个事项都必须交给独立 subagent 审核，并维护 reviewer 生命周期；优先使用当前可用的最强最新模型，默认目标是 `gpt-5.4` + `xhigh`。
-17. `wait_agent` 单次超时只视为软超时；只有在二次探测后仍无结果，且达到硬超时门槛时，才允许关闭 reviewer 并安排 replacement reviewer。
-18. 只要仍有未完成事项、可执行动作、待处理 reviewer 分配、活跃 reviewer、待处理审查意见，agent 就不得静默停止；只有在“没有任何可执行事项且没有任何 reviewer assignment 可继续推进”时，才允许向用户报告 blocker。
-19. 只有全部事项进入 `done` 后，才允许宣布完成。
-
-## 启动流程
-
-### 1. 任务归属判定 gate
-
-在创建或复用 checklist 之前，先检查当前请求与既有 checklist 的关系，并记录到 `任务归属判定`：
-
-- `same-task`：当前请求是在继续同一个目标、同一组验收标准或同一批工作包；只在这种情况下允许继续旧 checklist。
-- `different-task`：当前请求引入了新的目标、新的交付物，或需要追加不属于当前 checklist 原始目标的新工作包；这种情况必须新建 checklist。
-- `uncertain`：无法安全判断是否同一任务；这种情况必须先问用户一个澄清问题。
-
-判定规则：
-
-- 不要因为“还有旧 checklist 存在”就默认继续旧 checklist。
-- 不要因为“主题相关”就判定为 `same-task`；只要需要把新请求作为额外工作项追加进旧 checklist，通常就已经是 `different-task`。
-- 已 `done` 的 checklist 不得 reopened；后续请求统一视为 `different-task`。
-- 只有在明确属于同一任务续做时，才允许进入恢复协议并继续旧 checklist。
-
-### 2. 选择 checklist 文档
-
-默认位置：
-
-- 仓库已有 `docs/` 时，使用 `docs/checklists/`
-- 否则使用仓库根目录下的 `checklists/`
-
-- 若判定为 `same-task`：继续既有未完成 checklist，并在文档中更新 `任务归属判定`。
-- 若判定为 `different-task`：创建新 checklist，默认文件名为：
-
-  - `<task-slug>.md`
-
-- 若判定为 `uncertain`：先向用户澄清，不要修改旧 checklist，也不要预创建新 checklist。
-
-不要只在对话里口头列 checklist，必须落成文档。
-
-### 3. 任务重整 gate
-
-在开始任何实施前，先判断原始任务是否已经是适合并行开发的工作包形态：
-
-- 如果原始任务已经具备清晰的 item-level DAG、文件边界、验证边界和共享面约束，就沿用现有拆分，不要为了“更像并行”而重整。
-- 如果原始任务仍是单块需求、线性描述、口头子任务列表，或其现有拆分不足以安全并行，就必须先重整成适合多 Agent 并行开发的工作包，再继续后续流程。
-
-任务重整后的每个工作包至少要满足：
-
-- 能明确指定文件或模块 ownership
-- 能单独写计划、实施、验证和审核
-- 能明确列出 `shared_surfaces`
-- 能解释为什么可并行，或为什么必须阻塞
-
-若发生任务重整，必须在 checklist 中记录 `任务重整摘要`，至少包含：
-
-- 原始任务形态
-- 触发重整的原因
-- 重整后的工作包映射
-- 并行批次说明
-- 关键不可并行约束
-
-### 4. 创建实施前基线
-
-在开始任何实施前，文档里必须先写好：
-
-- 总 checklist
-- `任务归属判定`
-- item-level DAG
-- Mermaid DAG 图
-- 每个事项的结构化字段
-- 每个事项的计划区
-
-### 5. 开始前先同步给用户
-
-必须说明：
-
-- checklist 文档路径
-- 当前请求的任务归属判定结果（`same-task` / `different-task` / `uncertain`）
-- checklist 项列表
-- 是否触发任务重整；若触发，说明重整结果
-- DAG 摘要
-- 当前 `ready` / `active` / `review-queued` 事项概览
-
-### 6. 初始化调度字段
-
-开始实施前，每个事项的结构化字段必须至少包含以下批准字段：
-
-- `item_id`
-- `blocked_by`
-- `blocks`
-- `shared_surfaces`
-- `parallel_group`
-- `dispatch_status`
-- `assigned_subagent`
-
-如需补充实施/验证/审核信息，可额外维护辅助字段（例如 `verification`、`reviewer_id`、`reviewer_state`、`next_action`），但这些都是补充元数据，不能替代上述批准字段作为调度真相。
-
-### 7. 进入 cycle 驱动执行
-
-每个 cycle 开始时必须：
-
-1. 重新读取整个 checklist 文档，而不是只看局部小节。
-2. 重新核对 item-level DAG、Mermaid、结构化字段。
-3. 以结构化字段为准修正 Mermaid 与派生队列视图。
-4. 重新计算所有未完成事项的 `dispatch_status`。
-5. 按固定优先级执行：`changes-requested` -> `review-queued` -> 补满实施槽位。
-
-## Checklist 结构
-
-至少包含以下部分：
-
-- 总 checklist
-- `任务归属判定`（新 checklist 必填；复用旧 checklist 时也必须补写或更新；历史遗留 checklist 可暂时缺失，但不能作为继续追加新任务的依据）
-- `任务重整摘要`（可选。仅在发生任务重整时必填；未触发时可省略，或显式写明“无需重整”）
-- item-level DAG 说明
-- Mermaid DAG 图
-- 每一项的结构化字段区
-- 每一项的计划区
-- 每一项的实施记录区
-- 每一项的验证记录区
-- 每一项的审核记录区
-- 派生队列视图区（可选。若存在，只能由结构化字段推导；缺失这些队列小节本身不构成协议错误）
-- `当前状态` / `阻塞原因` / `下一动作`
-
-每个事项的结构化字段至少要覆盖以下批准调度字段：
-
-- `item_id`
-- `blocked_by`
-- `blocks`
-- `shared_surfaces`
-- `parallel_group`
-- `dispatch_status`
-- `assigned_subagent`
-
-如需记录补充信息，可追加辅助字段（例如 `verification`、`reviewer_id`、`reviewer_state`、`last_review_result`、`next_action`），但不得用替代命名（如把 `blocked_by` 改写成 `depends_on`）充当主调度字段。
-
-Mermaid 必须表达 item-level DAG，而不是只画阶段说明。`blocked_by`、`blocks`、`shared_surfaces`、`parallel_group`、`dispatch_status` 必须能直接支撑调度决策。
-
-## 并行执行规则
-
-### 调度真相来源
-
-调度只能读取：
-
-- item-level DAG
-- 结构化字段
-- 当前 cycle 重新计算得到的 `dispatch_status`
-
-任何 ready queue、review queue、摘要表都只是派生视图，不能替代 `dispatch_status` 作为调度依据。
-
-文档可以完全不写 `Ready 队列`、`Active 实现队列`、`Active reviewer 队列`、`Review Queue` 这些小节；只要结构化字段、DAG 和 Mermaid 一致，调度协议仍然成立。
-
-### 每个 cycle 的一致性校对
-
-每个 cycle 都必须重新读取整个 checklist 文档，并执行：
-
-1. 对照 Mermaid DAG 与结构化字段。
-2. 如果不一致，以结构化字段为准。
-3. 立即修正文档，让 Mermaid 和派生视图恢复一致。
-4. 重新计算所有未完成事项，而不是只看上一轮正在处理的事项。
-
-### dispatch_status 语义
-
-`dispatch_status` 允许且只允许以下值：
-
-- `blocked`：仍有 `blocked_by` 中未满足依赖，或与当前 `active` / `in-review` 事项在 `shared_surfaces` 或 `parallel_group` 上冲突，当前 cycle 不能推进。
-- `ready`：`blocked_by` 依赖已满足，且当前 cycle 可进入实施槽位。
-- `active`：正在实施中，尚未完成本轮实现/验证闭环。
-- `implemented`：实现已完成，验证已记录，等待被当前 cycle 收敛到审核调度。
-- `review-queued`：实现和验证已完成，但 reviewer 槽位暂时不可用，或等待本 cycle 分配 reviewer。
-- `in-review`：已分配 reviewer，当前正在等待 reviewer 结果或执行 reviewer 超时处理。
-- `changes-requested`：reviewer 已返回问题，必须优先修正并补充验证。
-- `done`：最新审核明确通过，且该事项相关 reviewer 已关闭并记录。
-
-除 `done` 外的所有状态都属于未完成事项，必须在每个 cycle 重新计算。
-
-### 每个 cycle 的固定调度优先级
-
-每个 cycle 必须严格按以下顺序调度：
-
-1. 先处理全部 `changes-requested` 事项。
-2. 再处理全部 `review-queued` 事项，优先占满 reviewer 槽位。
-3. 最后用 `ready` 事项补满实施槽位。
-
-不要跳过高优先级状态去启动新的低优先级事项。
-
-### 实施并发上限
-
-实施并发上限固定为 `4`。
-
-每个 cycle 必须计算：
-
-`target_impl_concurrency = min(current active items + non-conflicting ready items that can be filled now, 4)`
-
-要求：
-
-- `current active items` 指当前已处于 `active` 的事项数。
-- `non-conflicting ready items that can be filled now` 指当前 cycle 中 `blocked_by` 已满足、与现有 `active` 事项及彼此之间在 `shared_surfaces` 和 `parallel_group` 上都不冲突、且可以立刻开工的 `ready` 事项数。
-- 只要存在可达的非冲突 `ready` 事项，就必须把这些事项显式分配给 implementation subagents，并并行派发直到达到当前可达上限或实施上限 `4`；不能只在抽象上“占满槽位”而不实际 dispatch subagent。
-- 当 implementation 槽位可用且存在多个可并行的 `ready` 事项时，必须在同一 cycle 中并行 dispatch 对应数量的 implementation subagents，数量上限为当前可达 cap。
-- 每个进入 `active` 的事项都必须记录其 `assigned_subagent`；若某槽位为空，必须能从 DAG 依赖或 `shared_surfaces` / `parallel_group` 冲突中解释为什么当前 cycle 不能再派发。
-- 如果当前可达上限小于 `4`，原因必须能从 DAG 依赖或 `shared_surfaces` / `parallel_group` 冲突中解释出来。
-- 初始化 checklist 时，无依赖且无当前冲突的事项应直接标记为 `ready`；只有存在未满足依赖或当前 cycle 冲突时，才应标记为 `blocked`。
-
-### Reviewer 并发上限
-
-- 同时最多 `2` 个 `in-review` 事项
-- `review-queued` 可多于 `2`，但 reviewer 分配时必须按优先顺序消化
-
-当 reviewer 槽位不足时，事项保持在 `review-queued`，直到本 cycle 或后续 cycle 有 reviewer 空位。
-
-### shared_surfaces 冲突规则
-
-`shared_surfaces` 必须显式列出可能引发调度冲突的共享面，例如：
-
-- 共享文件或目录写入面
-- 公共 API / 接口契约
-- 数据模型、schema、migration
-- 权限、安全、鉴权逻辑
-- 状态机、缓存一致性、并发控制
-- 共享配置、入口、基础设施
-
-若两个未完成事项的 `shared_surfaces` 实质重叠，则不能同时处于会相互污染的状态；通常不得同时进入 `active`，必要时也不得并行 `in-review` 后继续基于旧上下文实施。
-
-## 单项执行闭环
-
-### 第一步：先写计划
-
-开始实现前，先把该项计划写入 checklist 文档。计划至少要写清楚：
-
-- 这项要改什么
-- 会涉及哪些文件或模块
-- 依赖哪些前置事项（对应 `blocked_by` / `blocks`）
-- 会触碰哪些 `shared_surfaces`
-- 属于哪个 `parallel_group`，以及为何可与哪些事项并行
-- 如何验证完成
-- 已知风险和边界条件
-
-计划不具体就先补具体，再进入 `active`。
-
-### 第二步：按计划实施并验证
-
-只处理当前事项计划内内容，不顺手实现其他未计划内容。
-
-实施后更新：
-
-- `dispatch_status`
-- `assigned_subagent`
-- `实施记录`
-- `验证记录`
-- `next_action`
-
-实现和验证完成后，先把事项收敛到 `implemented`，再由当前 cycle 判断是直接进入 `in-review` 还是进入 `review-queued`。
-
-如果没有任何验证动作，不允许离开实施闭环进入审核调度。
-
-### 第三步：进入审核调度
-
-审核必须使用独立 subagent。优先选择当前环境里可用的最强最新模型，默认目标为：
-
-- 模型：`gpt-5.4`
-- 推理强度：`xhigh`
-
-若当前环境不可用，允许降级到可用替代，但必须在审核记录中写明原因。
-
-审核输入至少要包含：
-
-- 原始任务目标
-- checklist 文档路径
-- 当前事项名称与 `item_id`
-- 当前事项计划
-- 当前事项在 DAG 中的依赖与后继关系
-- `shared_surfaces`
-- 涉及文件和改动摘要
-- 验证结果
-
-审核时优先检查：
-
-- 是否符合当前事项计划
-- 是否与 DAG 依赖假设一致
-- 是否遗漏需求
-- 是否引入行为回归
-- 是否存在明显 bug 或边界问题
-- 是否缺少必要验证
-- 是否做了不必要的额外实现
-
-## 可选 Web Progress Viewer
-
-当用户明确要求“打开界面”“看进度”“打开 web 界面”或等价意图时，可以在任务执行期间启动本地只读 web viewer，帮助查看：
-
-- DAG / 依赖关系
-- ready / active / review-queued / in-review / done 等派生队列
-- item 详情（计划、实施记录、验证记录、审核记录）
-- reviewer 相关状态
-
-边界规则：
-
-- 启动前先询问用户是否需要打开界面，不要默认自动弹出
-- viewer 只作为派生视图，不参与调度决策
-- viewer 只用于任务执行期间的临时查看；如果连续 30 分钟没有 page requests（no page requests），会自动退出
-- `/health` 不算 page request，不会续命
-- checklist 文档始终是唯一 source of truth
-- 不允许通过 viewer 直接修改 `dispatch_status`、reviewer 分配或其他调度字段
-- 若 viewer 展示与 checklist 不一致，以 checklist 为准
-
-推荐启动命令保持不变：
+这是 controller-enforced 的开发工作流。`SKILL.md` 只保留执行入口；详细协议放在 `references/protocol.md`，状态转换图放在 `references/workflow-state-machine.md`。
+
+## 不可变规则
+
+1. 先做 `任务归属判定`，结果只允许 `same-task`、`different-task`、`uncertain`。
+2. `different-task` 必须新建 checklist；已 `done` 的 checklist 不得 reopened。
+3. checklist 是唯一 source of truth，但关键状态字段必须由 `controller.py` 写入。
+4. 禁止手改 `dispatch_status`、`assigned_subagent`、`reviewer_id`、`reviewer_state` 和 checklist 勾选状态。
+5. 每个 cycle 必须先运行 controller；controller 返回 error 时先修 error，不得继续推进。
+6. 有 `dispatch_packets` 时必须消费 packet；能并行就并行派发，不能并行就按 packet 顺序本地执行。
+7. 结束前必须再次运行 `cycle`；只有所有 item 都是 `done` 才能宣布完成。
+
+## 入口流程
+
+1. 判定当前请求属于 `same-task`、`different-task` 还是 `uncertain`。
+2. 为 `same-task` 选择既有未完成 checklist；为 `different-task` 新建 checklist。
+3. 若任务尚未拆成可并行工作包，先拆成 item-level DAG，并明确 `blocked_by`、`blocks`、`shared_surfaces`。
+4. 创建或补齐 checklist 后运行：
 
 ```bash
-python3 strict-review-development-mode/viewer/serve.py --checklist <checklist-path> --port 0
+python3 strict-review-development-mode/controller.py validate --checklist <checklist.md> --json
 ```
 
-即使 viewer 已打开，终端中的关键调度摘要仍必须继续输出，不得把 viewer 当成新的控制台。
+5. 每个执行循环都运行：
 
-## 审查 agent 生命周期
+```bash
+python3 strict-review-development-mode/controller.py cycle --checklist <checklist.md> --json
+```
 
-每个 checklist 事项默认只保留一个可复用 reviewer 身份。
+6. 如果 `cycle` 输出 `status_updates`，运行：
 
-- 事项第一次进入审核时，为其创建专属 reviewer，并在 `审核记录` 中记录 agent 标识。
-- 同一事项后续若进入 `changes-requested` -> 复审循环，优先复用同一个 reviewer，不要为同一事项反复新开 reviewer。
-- `review-queued` 表示该事项已准备好审核，但尚未占用 reviewer 槽位；只有真正分配 reviewer 后才转为 `in-review`。
-- 只有在 reviewer 已不可用、上下文明显失真、或必须切换到更强可用模型时，才允许创建 replacement reviewer。
-- 若必须更换 reviewer，先关闭旧 reviewer；如果做不到，必须在 `审核记录` 中写明原因和剩余 reviewer 的处理计划。
-- reviewer 不得跨事项复用。
-- 事项变为 `done` 前，相关 reviewer 必须全部关闭并记录。
-- DAG 并行模式下也不得突破 reviewer 并发上限 `2`。
+```bash
+python3 strict-review-development-mode/controller.py cycle --checklist <checklist.md> --write --json
+```
 
-## Reviewer 超时状态机
+7. 如果 `cycle` 输出 `dispatch_packets`，按 packet 的 `command` 和 `prompt` 执行。
 
-`wait_agent` 超时不等于 reviewer 已失活。必须区分 `slow` 和 `stalled`，并把处理动作与 `review-queued` / `in-review` 调度衔接起来。
+## 常用命令
 
-推荐默认阈值：
+```bash
+python3 strict-review-development-mode/controller.py init --checklist <checklist.md> --title "<任务标题>" --request "<用户请求>" --items-json '<json-array>'
+python3 strict-review-development-mode/controller.py validate --checklist <checklist.md> --json
+python3 strict-review-development-mode/controller.py cycle --checklist <checklist.md> --json
+python3 strict-review-development-mode/controller.py diagram
+python3 strict-review-development-mode/controller.py plan --checklist <checklist.md> --item item-1 --text-file <plan-file>
+python3 strict-review-development-mode/controller.py start --checklist <checklist.md> --item item-1 --agent <agent-id>
+python3 strict-review-development-mode/controller.py mark-implemented --checklist <checklist.md> --item item-1 --implementation-file <impl-file> --verification-file <verification-file>
+python3 strict-review-development-mode/controller.py queue-review --checklist <checklist.md> --item item-1
+python3 strict-review-development-mode/controller.py assign-reviewer --checklist <checklist.md> --item item-1 --reviewer <reviewer-id>
+python3 strict-review-development-mode/controller.py request-changes --checklist <checklist.md> --item item-1 --review-file <review-file>
+python3 strict-review-development-mode/controller.py approve --checklist <checklist.md> --item item-1 --review-file <approval-file>
+```
 
-- 首次等待窗口：`10` 分钟
-- 二次探测窗口：再等 `10-20` 分钟
-- 硬超时门槛：累计等待至少 `30` 分钟，且至少连续 `2` 次 `wait_agent` 超时
+`items-json` 是工作包数组，每项至少包含 `item_id` 和 `title`，可包含 `blocked_by`、`shared_surfaces`、`parallel_group`。
 
-推荐 reviewer_state：
+## 状态转换图
 
-- `reviewing`：正常等待 reviewer 结果
-- `slow`：发生过一次超时，但仍可能在继续工作
-- `suspect-stalled`：达到硬超时门槛，疑似卡死
-- `closed`：已显式关闭
-- `replaced`：旧 reviewer 已关闭，并已切换到 replacement reviewer
+```mermaid
+stateDiagram-v2
+  [*] --> blocked: 有未完成依赖
+  [*] --> ready: 无依赖或依赖已 done
+  blocked --> ready: cycle --write / 上游 done
+  ready --> ready: planning packet / controller plan
+  ready --> active: controller start
+  active --> implemented: controller mark-implemented
+  implemented --> review_queued: controller queue-review
+  implemented --> in_review: controller assign-reviewer / reviewer 槽位可用
+  review_queued --> in_review: controller assign-reviewer
+  in_review --> changes_requested: controller request-changes
+  changes_requested --> active: controller start / rework
+  changes_requested --> implemented: controller mark-implemented / 补验证
+  in_review --> done: controller approve
+  done --> [*]
+```
 
-处理规则：
+## dispatch_packets 语义
 
-- 第一次 `wait_agent` 超时时，只把 reviewer 标记为 `slow`，更新 `审核记录`，事项保持 `in-review`，不要立即关闭。
-- 第一次超时后，必须做一次二次探测，并给更长等待窗口。
-- 二次探测期间只做被动等待或轮询，不要用打断式手段探活，以免误杀慢 reviewer。
-- 只有在二次探测后仍无结果，且达到硬超时门槛时，才允许把 reviewer 标记为 `suspect-stalled` 并执行 `close_agent`。
-- 关闭后如果当前事项仍需审核：
-  - reviewer 槽位可立即分配时，创建 replacement reviewer，并保持事项为 `in-review`；
-  - reviewer 槽位暂不可用时，把事项置为 `review-queued`，等待后续 cycle 重新分配。
-- 每个事项最多自动创建 `1` 个 replacement reviewer。若 replacement reviewer 仍达到硬超时，停止自动替换，升级给主 agent 或用户决定。
+`cycle --json` 会按固定优先级输出 packet：
 
-## 审核循环
+1. `rework` / `replan`：优先处理 reviewer 要求修改的事项。
+2. `review`：实现和验证已完成，等待独立审核。
+3. `planning`：ready 但尚无具体计划。
+4. `implementation`：ready 且计划已写明，可进入实施。
 
-只要审查者还提出任何需要处理的问题，都视为未通过。必须循环：
+packet 是 C 方案的通用接口。controller 不直接调用任何平台私有 subagent API；Codex、Claude、OpenAI、CI worker 或人工 reviewer 都可以消费 packet，再用 controller 命令写回结果。
 
-1. 把 reviewer 问题记录到 `审核记录`。
-2. 将 `dispatch_status` 设为 `changes-requested`。
-3. 在下一调度 cycle 优先修正实现或补充验证。
-4. 更新 `实施记录`、`验证记录`、`next_action`。
-5. 优先把新结果发回当前事项既有 reviewer 复审；只有该 reviewer 不可复用时才创建 replacement reviewer。
-6. 复审请求发出后，事项进入 `in-review`；若 reviewer 槽位不足，则先进入 `review-queued`。
-7. 若等待 reviewer 时发生超时，按 Reviewer 超时状态机处理；不要把单次超时直接当成失败或卡死。
-8. 只有最新一轮审核明确表示“没有发现问题”或等价批准时，才允许准备进入 `done` 收口。
+## 何时读取参考文档
 
-## 冲突处理
+- 需要完整协议、冲突规则、reviewer 生命周期时，读取 `references/protocol.md`。
+- 需要只看状态机和 Mermaid 图时，读取 `references/workflow-state-machine.md`。
+- 用户要求打开进度界面时，再看 `viewer/serve.py` 的启动方式；viewer 只读，不参与调度。
 
-如果任一 cycle 发现 DAG、`blocked_by` / `blocks`、`shared_surfaces`、`parallel_group`、实施事实或 reviewer 反馈之间存在冲突：
+## 结束前检查
 
-1. 立即重新读取整个 checklist 文档。
-2. 重新核对 Mermaid、结构化字段、实施记录、审核记录。
-3. 以结构化字段为准修正文档，并重算所有未完成事项。
-4. 对受影响事项重新判定 `blocked` / `ready` / `changes-requested` / `review-queued` / `in-review`。
-5. 若发现原先并行假设失效，立即撤销错误并行，把冲突事项移出错误状态，并写明新的 `blocked_by` / `blocks`、`shared_surfaces` 或 `parallel_group`。
-6. 只要仍有其他可执行事项或 reviewer assignment 可推进，就继续调度，不要因为局部冲突直接向用户报 blocker。
+结束前必须运行：
 
-## 不得静默停止
+```bash
+python3 strict-review-development-mode/controller.py cycle --checklist <checklist.md> --json
+```
 
-未完成不等于可停止。以下情况都视为违规停止：
-
-- 仍有未完成事项，但 agent 直接结束本轮响应
-- 未明确说明阻塞原因，就停在半途
-- 尚有 `review-queued`、`in-review`、`changes-requested` 或可补位的 `ready` 事项，却没有继续推进或明确交接
-- 仅输出阶段性说明，却没有写明下一动作和恢复点
-
-如果当前回合不能继续推进，允许进入“受控阻塞”，但不允许静默结束。
-
-## 结束响应前检查
-
-在结束任何一次响应前，必须执行以下检查：
-
-1. 重新读取整个 checklist 文档。
-2. 重新核对 item-level DAG、Mermaid、结构化字段是否一致；若不一致，立即修正，且以结构化字段为准。
-3. 重新计算所有未完成事项的 `dispatch_status`，不要只看本轮刚处理的事项。
-4. 确认当前是否仍存在：`changes-requested`、`review-queued`、可补位的 `ready`、需要继续实施的 `active`、需要等待/探测/关闭/替换的 reviewer assignment。
-5. 若仍有任何可执行事项或 reviewer assignment 可继续推进，就继续推进，不要结束响应。
-6. 只有在“没有任何可执行事项且没有任何 reviewer assignment 可继续推进”时，才允许写入 blocker，并先把 `当前状态`、`阻塞原因`、`下一动作` 更新到 checklist。
-7. 恢复或结束前用于同步给用户/主 agent 的输出，至少要显式包含：`当前 ready 队列`、`当前 active 实现队列`、`当前 active reviewer 队列`、`当前最优先动作`。
-8. 只有当所有事项都已进入 `done`，且相关 reviewer 已关闭后，才允许发送完成结论。
-
-结束响应时，只允许处于以下三种状态之一：
-
-- `继续执行`：不结束，直接做下一动作
-- `受控阻塞`：已经重读 checklist + DAG、完成一致性修正、确认没有可执行事项或 reviewer assignment 后，再向用户报告 blocker
-- `全部完成`：所有 checklist 项均已进入 `done`
-
-任何不属于这三种状态的结束方式，都视为违规。
-
-## 中断与恢复协议
-
-若会话因中断、超时、上下文漂移、reviewer 替换或其他原因恢复，必须先执行恢复协议，再继续推进：
-
-恢复协议只适用于当前请求已被判定为 `same-task` 的情况。若当前请求属于 `different-task`，必须新建 checklist，不得借“恢复”之名往旧 checklist 追加新工作项。
-
-1. 重新读取整个 checklist 文档，而不是只读当前事项小节。
-2. 重新核对 item-level DAG、Mermaid、结构化字段，并立即修正不一致处；以结构化字段为准。
-3. 重新计算所有未完成事项，找出全部 `blocked`、`ready`、`active`、`implemented`、`review-queued`、`in-review`、`changes-requested`。
-4. 重新核对 reviewer 状态，确认哪些事项仍在等待 reviewer、需要二次探测、需要关闭、需要 replacement reviewer、或可从 `review-queued` 重新分配 reviewer。
-5. 按固定优先级重新调度：`changes-requested` -> `review-queued` -> 补满实施槽位。
-6. 明确当前 cycle 的实际下一动作并恢复执行，而不是停留在摘要或阶段性说明。
-
-如果恢复后发现状态不一致：
-
-- 先修正文档中的 DAG、结构化字段与派生视图
-- 再恢复执行
-- 不要因为状态不一致而直接结束响应
-
-## 勾选规则
-
-只有同时满足以下条件，才允许把 `- [ ]` 改为 `- [x]`：
-
-- 计划已写明
-- 实现已完成
-- 验证已执行并记录
-- 最新 `dispatch_status` 已进入 `done`
-- 独立强审已完成
-- 最新审核不再提出问题
-- 当前事项相关 reviewer 已显式关闭并记录
-
-## 停止条件
-
-完成前必须回看整个 checklist 文档和 item-level DAG。
-
-只要还有任何未完成事项、活跃 reviewer、待处理 reviewer assignment、可执行事项或待处理审查意见：
-
-- 不要宣布完成
-- 不要停止流程
-- 继续按固定优先级调度下一动作
-
-最终汇报必须说明 checklist 文档路径，并确认所有事项都已进入 `done`。
+如果仍有 error、`status_updates`、`dispatch_packets`、未完成 item、活跃 reviewer 或待处理 reviewer assignment，就继续推进或报告明确 blocker；不要宣布完成。

@@ -1,0 +1,345 @@
+from __future__ import annotations
+
+import importlib.util
+import contextlib
+import io
+import json
+import sys
+import tempfile
+import textwrap
+import unittest
+from pathlib import Path
+from typing import Dict, Set
+
+CONTROLLER_PATH = Path(__file__).resolve().parents[2] / "controller.py"
+WORKFLOW_REFERENCE_PATH = Path(__file__).resolve().parents[2] / "references" / "workflow-state-machine.md"
+
+
+def _load_controller_module():
+    if not CONTROLLER_PATH.exists():
+        raise ImportError(f"controller module not found at {CONTROLLER_PATH}")
+
+    spec = importlib.util.spec_from_file_location("strict_review_controller_for_tests", CONTROLLER_PATH)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"unable to load controller module from {CONTROLLER_PATH}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+controller = _load_controller_module()
+
+
+def make_item(
+    number: int,
+    item_id: str,
+    title: str,
+    *,
+    blocked_by: str = "[]",
+    blocks: str = "[]",
+    surfaces: str = "[]",
+    status: str = "ready",
+    assigned: str = "none",
+    reviewer_id: str = "none",
+    reviewer_state: str = "not-started",
+    plan: str = "- 计划：按事项边界实施",
+    implementation: str = "- 待填写",
+    verification: str = "- 待填写",
+    review: str = "- Reviewer：待填写\n- Reviewer 状态：待填写\n- 审核结论：待填写\n- 关闭状态：待填写",
+) -> str:
+    return (
+        f"## Item {number} - {title}\n"
+        "### 结构化字段\n"
+        f"- item_id：{item_id}\n"
+        f"- blocked_by：{blocked_by}\n"
+        f"- blocks：{blocks}\n"
+        f"- shared_surfaces：{surfaces}\n"
+        f"- parallel_group：wave-{number}\n"
+        f"- dispatch_status：{status}\n"
+        f"- assigned_subagent：{assigned}\n"
+        f"- reviewer_id：{reviewer_id}\n"
+        f"- reviewer_state：{reviewer_state}\n"
+        "- next_action：等待调度\n\n"
+        "### 计划\n"
+        f"{plan}\n\n"
+        "### 实施记录\n"
+        f"{implementation}\n\n"
+        "### 验证记录\n"
+        f"{verification}\n\n"
+        "### 审核记录\n"
+        f"{review}\n"
+    )
+
+
+def build_checklist(*item_blocks: str) -> str:
+    return (
+        textwrap.dedent(
+            """\
+            # Controller Test Checklist
+
+            ## 模式
+            - 强审开发模式（controller-enforced DAG-first）
+
+            ## 审核设置
+            - 审核模型目标：gpt-5.4
+            - 推理强度目标：xhigh
+            - 实施并行上限：4
+            - reviewer 并行上限：2
+
+            ## 任务归属判定
+            - 当前请求：测试 controller
+            - 判定结果：different-task
+            - 判定依据：测试用新 checklist
+            - 关联旧 checklist：none
+
+            ## 当前执行状态
+            - 当前状态：进行中
+
+            ## Checklist
+            - [ ] 1. One
+            - [ ] 2. Two
+            - [ ] 3. Three
+            - [ ] 4. Four
+
+            ## DAG 概览
+            - 关键串行路径：由结构化字段决定
+
+            ## Mermaid DAG
+            ```mermaid
+            graph TD
+              item-1[One] --> item-2[Two]
+              item-3[Three]
+              item-4[Four]
+            ```
+            """
+        )
+        + "\n"
+        + "\n".join(item_blocks)
+    )
+
+
+def write_temp_checklist(text: str) -> Path:
+    path = Path(tempfile.mkdtemp()) / "checklist.md"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def violation_codes(payload: Dict[str, object]) -> Set[str]:
+    return {str(violation["code"]) for violation in payload["violations"]}  # type: ignore[index]
+
+
+class ControllerValidationTests(unittest.TestCase):
+    def test_validate_reports_lifecycle_dependency_and_concurrency_errors(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(
+                    1,
+                    "item-1",
+                    "One",
+                    blocks="[item-2]",
+                    surfaces="[shared-api]",
+                    status="active",
+                    assigned="none",
+                    plan="- 待填写",
+                ),
+                make_item(2, "item-2", "Two", blocked_by="[item-1]", status="ready"),
+                make_item(3, "item-3", "Three", surfaces="[shared-api]", status="active", assigned="agent-3"),
+                make_item(4, "item-4", "Four", status="done", assigned="agent-4"),
+            )
+        )
+
+        payload = controller.validate_checklist(path)
+
+        codes = violation_codes(payload)
+        self.assertFalse(payload["ok"])
+        self.assertIn("active_without_assigned_subagent", codes)
+        self.assertIn("active_without_plan", codes)
+        self.assertIn("dependency_not_done", codes)
+        self.assertIn("active_shared_surface_conflict", codes)
+        self.assertIn("missing_implementation_record", codes)
+        self.assertIn("missing_verification_record", codes)
+        self.assertIn("done_without_closed_reviewer", codes)
+        self.assertIn("done_without_approval", codes)
+
+    def test_cycle_emits_external_dispatch_packets_in_protocol_priority_order(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(
+                    1,
+                    "item-1",
+                    "One",
+                    status="changes-requested",
+                    assigned="agent-1",
+                    surfaces="[item-one]",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    review="- 审核结论：需要修改边界条件\n- 关闭状态：open",
+                ),
+                make_item(
+                    2,
+                    "item-2",
+                    "Two",
+                    status="implemented",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                ),
+                make_item(
+                    3,
+                    "item-3",
+                    "Three",
+                    status="review-queued",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                ),
+                make_item(4, "item-4", "Four", surfaces="[item-four]", status="ready"),
+            )
+        )
+
+        payload = controller.build_cycle_plan(path)
+
+        self.assertTrue(payload["ok"])
+        packets = payload["dispatch_packets"]
+        self.assertEqual(["rework", "review", "review", "implementation"], [packet["packet_type"] for packet in packets])
+        self.assertEqual(["item-1", "item-2", "item-3", "item-4"], [packet["item_id"] for packet in packets])
+        self.assertIn("assign-reviewer", packets[1]["command"])
+
+    def test_cycle_emits_planning_packet_before_unplanned_ready_implementation(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(1, "item-1", "One", blocks="[item-2]", status="ready", plan="- 待填写"),
+                make_item(2, "item-2", "Two", blocked_by="[item-1]", blocks="[]", status="blocked"),
+                make_item(3, "item-3", "Three", status="ready"),
+                make_item(4, "item-4", "Four", status="ready"),
+            )
+        )
+
+        payload = controller.build_cycle_plan(path)
+
+        packets = payload["dispatch_packets"]
+        self.assertEqual("planning", packets[0]["packet_type"])
+        self.assertEqual("item-1", packets[0]["item_id"])
+        self.assertIn("controller.py plan", packets[0]["command"])
+
+    def test_start_rejects_shared_surface_conflict_with_active_item(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(1, "item-1", "One", surfaces="[shared-file]", status="active", assigned="agent-1"),
+                make_item(2, "item-2", "Two", surfaces="[shared-file]", status="ready"),
+                make_item(3, "item-3", "Three"),
+                make_item(4, "item-4", "Four"),
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "conflicts with active item"):
+            controller.start_item(path, "item-2", "agent-2")
+
+    def test_state_machine_transitions_write_checklist_and_close_done_item(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "checklist.md"
+            controller.init_checklist(
+                path,
+                "Controller Init Checklist",
+                "新增控制器",
+                [
+                    {
+                        "item_id": "item-1",
+                        "title": "Build controller",
+                        "blocked_by": [],
+                        "shared_surfaces": ["controller.py"],
+                        "parallel_group": "wave-1",
+                    }
+                ],
+            )
+
+            self.assertTrue(controller.plan_item(path, "item-1", "- 计划：实现控制器并补测试")["ok"])
+            self.assertTrue(controller.start_item(path, "item-1", "agent-1")["ok"])
+            self.assertTrue(
+                controller.mark_implemented(
+                    path,
+                    "item-1",
+                    "- 已实现 controller.py",
+                    "- python3 -m unittest discover 通过",
+                )["ok"]
+            )
+            self.assertTrue(controller.queue_review(path, "item-1")["ok"])
+            self.assertTrue(controller.assign_reviewer(path, "item-1", "reviewer-1")["ok"])
+            payload = controller.approve_item(
+                path,
+                "item-1",
+                "- Reviewer：reviewer-1\n- 审核结论：通过，没有发现问题\n- 关闭状态：closed",
+            )
+
+            self.assertTrue(payload["ok"])
+            document = path.read_text(encoding="utf-8")
+            self.assertIn("- dispatch_status：done", document)
+            self.assertIn("- reviewer_state：closed", document)
+            self.assertIn("- [x] 1. Build controller", document)
+
+    def test_cli_validate_returns_nonzero_for_protocol_errors(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(1, "item-1", "One", status="active", assigned="none", plan="- 待填写"),
+                make_item(2, "item-2", "Two", blocked_by="[item-1]", status="blocked"),
+                make_item(3, "item-3", "Three"),
+                make_item(4, "item-4", "Four"),
+            )
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            exit_code = controller.main(["validate", "--checklist", str(path), "--json"])
+
+        self.assertEqual(1, exit_code)
+
+    def test_cli_init_accepts_json_item_definitions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "checklist.md"
+            with contextlib.redirect_stdout(io.StringIO()):
+                exit_code = controller.main(
+                    [
+                        "init",
+                        "--checklist",
+                        str(path),
+                        "--title",
+                        "CLI Init",
+                        "--request",
+                        "测试 init",
+                        "--items-json",
+                        json.dumps(
+                            [
+                                {
+                                    "item_id": "item-1",
+                                    "title": "First item",
+                                    "blocked_by": [],
+                                    "shared_surfaces": ["first.py"],
+                                    "parallel_group": "wave-1",
+                                }
+                            ]
+                        ),
+                    ]
+                )
+
+            self.assertEqual(0, exit_code)
+            self.assertIn("## 任务归属判定", path.read_text(encoding="utf-8"))
+
+    def test_cli_diagram_prints_mermaid_state_machine(self) -> None:
+        stdout = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout):
+            exit_code = controller.main(["diagram"])
+
+        output = stdout.getvalue()
+        self.assertEqual(0, exit_code)
+        self.assertIn("```mermaid", output)
+        self.assertIn("stateDiagram-v2", output)
+        self.assertIn("in_review --> done", output)
+
+    def test_reference_workflow_diagram_matches_controller_diagram(self) -> None:
+        reference_text = WORKFLOW_REFERENCE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn(controller.WORKFLOW_STATE_DIAGRAM.strip(), reference_text)
+
+
+if __name__ == "__main__":
+    unittest.main()

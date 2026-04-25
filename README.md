@@ -26,18 +26,30 @@
 2. 先规划 item 级 DAG（结构化字段 + Mermaid）
 3. 依赖与冲突面明确后才允许实施
 4. 每项先写计划，再按计划实施与验证
-5. 只要存在互不冲突的 ready 节点，就必须并行派发实现 subagent
-6. 实现完成后按 reviewer 上限进入审核或 `review-queued`
-7. 全部 item 审核通过并关闭 reviewer 后才允许结束
-8. 如用户明确要求打开界面，可启动本地只读 web progress viewer 查看 DAG、队列和 item 详情；checklist 文档仍是唯一 source of truth
+5. 通过 `controller.py` 固定化状态机，拒绝非法 `dispatch_status` 迁移
+6. 只要存在互不冲突的 ready 节点，就必须按 `controller.py cycle --json` 的 `dispatch_packets` 派发工作包
+7. 实现完成后按 reviewer 上限进入审核或 `review-queued`
+8. 全部 item 审核通过并关闭 reviewer 后才允许结束
+9. 如用户明确要求打开界面，可启动本地只读 web progress viewer 查看 DAG、队列和 item 详情；checklist 文档仍是唯一 source of truth
 
 这个可选本地 progress viewer 只在任务执行期间使用，并会在 30 分钟内没有 page requests（no page requests）时自动退出。
+
+`controller.py` 是通用 CLI，不绑定具体 agent 平台。它提供 B 方案能力（validator + state machine CLI），并通过 `dispatch_packets` 预留 C 方案能力（外部 orchestrator 可以消费 packet 后派发 subagent/reviewer，再用 controller 命令写回结果）。
 
 目录内容：
 
 - `strict-review-development-mode/SKILL.md`
 - `strict-review-development-mode/checklist-template.md`
+- `strict-review-development-mode/controller.py`（协议校验、状态机迁移、cycle 调度包输出）
+- `strict-review-development-mode/references/protocol.md`（完整协议参考）
+- `strict-review-development-mode/references/workflow-state-machine.md`（工作流状态转换图）
 - `strict-review-development-mode/viewer/`（可选本地只读 progress viewer，用于查看 DAG / queue / item 详情，不作为调度真相）
+
+查看状态转换图：
+
+```bash
+python3 strict-review-development-mode/controller.py diagram
+```
 
 ## 适用前提
 
