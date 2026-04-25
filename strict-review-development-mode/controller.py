@@ -97,6 +97,23 @@ ROLE_BY_PACKET_TYPE = {
     "review": "review",
 }
 
+GLOBAL_ROUTING_KEYS = (
+    "coordinator_agent",
+    "default_agent",
+    "fallback_agent",
+    "planning_agent",
+    "implementation_agent",
+    "rework_agent",
+    "review_agent",
+)
+
+ITEM_ROUTING_KEYS = (
+    "planning_agent",
+    "implementation_agent",
+    "rework_agent",
+    "review_agent",
+)
+
 
 @dataclass(frozen=True)
 class ControllerViolation:
@@ -374,6 +391,51 @@ def approve_item(checklist_path: Union[str, Path], item_id: str, review_text: st
     return validate_checklist(path)
 
 
+def set_agent_routing(
+    checklist_path: Union[str, Path],
+    item_id: Optional[str] = None,
+    coordinator_agent: Optional[str] = None,
+    default_agent: Optional[str] = None,
+    fallback_agent: Optional[str] = None,
+    planning_agent: Optional[str] = None,
+    implementation_agent: Optional[str] = None,
+    rework_agent: Optional[str] = None,
+    review_agent: Optional[str] = None,
+) -> Dict[str, object]:
+    routes = {
+        "coordinator_agent": coordinator_agent,
+        "default_agent": default_agent,
+        "fallback_agent": fallback_agent,
+        "planning_agent": planning_agent,
+        "implementation_agent": implementation_agent,
+        "rework_agent": rework_agent,
+        "review_agent": review_agent,
+    }
+    updates = _routing_updates(routes)
+    if not updates:
+        raise ValueError("at least one agent routing field is required")
+
+    path = Path(checklist_path)
+    document = path.read_text(encoding="utf-8")
+    if item_id:
+        invalid_keys = [key for key in updates if key not in ITEM_ROUTING_KEYS]
+        if invalid_keys:
+            raise ValueError("item routing only supports: " + ", ".join(ITEM_ROUTING_KEYS))
+        # item 级路由只影响指定事项，适合响应用户“这个事项交给某个 agent”的偏好。
+        for key in ITEM_ROUTING_KEYS:
+            if key in updates:
+                document = _set_structured_field(document, item_id, key, updates[key])
+    else:
+        # 全局路由表达用户对不同工作阶段的默认偏好，实际调用参数仍由 coordinator 决定。
+        for key in GLOBAL_ROUTING_KEYS:
+            if key in updates:
+                document = _set_top_level_bullet_field(document, "Agent 路由策略", key, updates[key])
+        document = _set_top_level_bullet_field(document, "Agent 路由策略", "invocation_policy", INVOCATION_POLICY)
+
+    path.write_text(document, encoding="utf-8")
+    return build_cycle_plan(path)
+
+
 def init_checklist(
     checklist_path: Union[str, Path],
     title: str,
@@ -405,6 +467,7 @@ def init_checklist(
         "## Agent 路由策略",
         "- coordinator_agent：current",
         "- default_agent：current",
+        "- fallback_agent：current",
         "- planning_agent：current",
         "- implementation_agent：current",
         "- rework_agent：current",
@@ -1036,6 +1099,15 @@ def _parse_bullet_fields(section_text: str) -> Dict[str, str]:
     return fields
 
 
+def _routing_updates(routes: Dict[str, Optional[str]]) -> Dict[str, str]:
+    updates: Dict[str, str] = {}
+    for key, value in routes.items():
+        agent_name = _agent_name(value)
+        if agent_name:
+            updates[key] = agent_name
+    return updates
+
+
 def _normalize_list(value: Any) -> List[str]:
     if value is None:
         return []
@@ -1171,6 +1243,34 @@ def _set_review_field(document: str, item_id: str, key: str, value: str) -> str:
     return _set_item_section(document, item_id, "审核记录", "\n".join(lines) + "\n")
 
 
+def _set_top_level_bullet_field(document: str, section_heading: str, key: str, value: str) -> str:
+    lines = document.splitlines()
+    replacement_line = f"- {key}：{value}"
+    for heading, start, end in _split_h2_ranges(lines):
+        if heading != section_heading:
+            continue
+        for index in range(start + 1, end):
+            match = STRUCTURED_LINE_RE.match(lines[index])
+            if match and match.group(2).strip() == key:
+                lines[index] = replacement_line
+                return "\n".join(lines) + "\n"
+
+        # 尽量插在 section 末尾空行之前，让全局路由区块保持紧凑。
+        insert_at = end
+        if insert_at > start + 1 and lines[insert_at - 1].strip() == "":
+            insert_at -= 1
+        return "\n".join([*lines[:insert_at], replacement_line, *lines[insert_at:]]) + "\n"
+
+    insert_at = len(lines)
+    for heading, start, _end in _split_h2_ranges(lines):
+        if heading == "任务归属判定":
+            insert_at = start
+            break
+    # 兼容旧 checklist：缺少 Agent 路由策略时由 controller 补齐该顶层小节。
+    section_lines = ["", f"## {section_heading}", replacement_line, ""]
+    return "\n".join([*lines[:insert_at], *section_lines, *lines[insert_at:]]) + "\n"
+
+
 def _get_item_section(document: str, item_id: str, section_heading: str) -> str:
     lines = document.splitlines()
     item_start, item_end = _find_item_range(lines, item_id)
@@ -1224,6 +1324,16 @@ def _add_text_args(parser: argparse.ArgumentParser, label: str) -> None:
     parser.add_argument(f"--{label}-file", help="Read text from a UTF-8 file")
 
 
+def _add_routing_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--coordinator-agent", help="Agent label for the coordinator")
+    parser.add_argument("--default-agent", help="Fallback default agent label")
+    parser.add_argument("--fallback-agent", help="Agent label used when target_agent is unavailable")
+    parser.add_argument("--planning-agent", help="Agent label for planning packets")
+    parser.add_argument("--implementation-agent", help="Agent label for implementation packets")
+    parser.add_argument("--rework-agent", help="Agent label for rework packets")
+    parser.add_argument("--review-agent", help="Agent label for review packets")
+
+
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Strict review checklist controller")
     subparsers = parser.add_subparsers(dest="command")
@@ -1239,6 +1349,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
     diagram_parser = subparsers.add_parser("diagram", help="Print workflow state machine diagram")
     diagram_parser.add_argument("--json", action="store_true")
+
+    routing_parser = subparsers.add_parser("set-routing", help="Set coordinator-controlled agent routing")
+    routing_parser.add_argument("--checklist", required=True)
+    routing_parser.add_argument("--item", help="Optional item_id for item-level routing override")
+    _add_routing_args(routing_parser)
+    routing_parser.add_argument("--json", action="store_true")
 
     init_parser = subparsers.add_parser("init", help="Create a controller-compatible checklist")
     init_parser.add_argument("--checklist", required=True)
@@ -1308,6 +1424,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.write and payload["status_updates"]:
                 write_status_updates(args.checklist, payload["status_updates"])
                 payload = build_cycle_plan(args.checklist)
+        elif args.command == "set-routing":
+            payload = set_agent_routing(
+                args.checklist,
+                args.item,
+                args.coordinator_agent,
+                args.default_agent,
+                args.fallback_agent,
+                args.planning_agent,
+                args.implementation_agent,
+                args.rework_agent,
+                args.review_agent,
+            )
         elif args.command == "init":
             init_checklist(args.checklist, args.title, args.request, json.loads(args.items_json))
             payload = validate_checklist(args.checklist)

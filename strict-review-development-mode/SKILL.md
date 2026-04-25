@@ -23,30 +23,33 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 1. 判定当前请求属于 `same-task`、`different-task` 还是 `uncertain`。
 2. 为 `same-task` 选择既有未完成 checklist；为 `different-task` 新建 checklist。
 3. 若任务尚未拆成可并行工作包，先拆成 item-level DAG，并明确 `blocked_by`、`blocks`、`shared_surfaces`。
-4. 创建或补齐 checklist 后运行：
+4. 不要把选择 agent 当作开场必问题；如果用户主动说明了“哪一部分用哪个 agent”，先用 `set-routing` 写入 checklist；不要只记在对话里。
+5. 创建或补齐 checklist 后运行：
 
 ```bash
 python3 strict-review-development-mode/controller.py validate --checklist <checklist.md> --json
 ```
 
-5. 每个执行循环都运行：
+6. 每个执行循环都运行：
 
 ```bash
 python3 strict-review-development-mode/controller.py cycle --checklist <checklist.md> --json
 ```
 
-6. 如果 `cycle` 输出 `status_updates`，运行：
+7. 如果 `cycle` 输出 `status_updates`，运行：
 
 ```bash
 python3 strict-review-development-mode/controller.py cycle --checklist <checklist.md> --write --json
 ```
 
-7. 如果 `cycle` 输出 `dispatch_packets`，coordinator 根据 `target_agent`、`role`、`prompt` 派发工作包，并自行决定调用方式和参数。
+8. 如果 `cycle` 输出 `dispatch_packets`，coordinator 根据 `target_agent`、`role`、`prompt` 派发工作包，并自行决定调用方式和参数。
 
 ## 常用命令
 
 ```bash
 python3 strict-review-development-mode/controller.py init --checklist <checklist.md> --title "<任务标题>" --request "<用户请求>" --items-json '<json-array>'
+python3 strict-review-development-mode/controller.py set-routing --checklist <checklist.md> --planning-agent codex --implementation-agent claude --review-agent gemini --json
+python3 strict-review-development-mode/controller.py set-routing --checklist <checklist.md> --item item-2 --implementation-agent gemini --json
 python3 strict-review-development-mode/controller.py validate --checklist <checklist.md> --json
 python3 strict-review-development-mode/controller.py cycle --checklist <checklist.md> --json
 python3 strict-review-development-mode/controller.py diagram
@@ -62,6 +65,8 @@ python3 strict-review-development-mode/controller.py approve --checklist <checkl
 `items-json` 是工作包数组，每项至少包含 `item_id` 和 `title`，可包含 `blocked_by`、`shared_surfaces`、`parallel_group`。
 
 ## Agent 路由策略
+
+用户可以主动告诉 coordinator 偏好，例如“规划用 Codex，开发用 Claude，审核用 Gemini”或“item-2 让 Gemini 开发”。coordinator 不需要在每次启动时主动询问 agent 选择；只有当用户主动提出或请求中已经包含 agent 偏好时，才把这些偏好转换为 `set-routing` 命令写入 checklist，然后再运行 `cycle`。
 
 checklist 可包含全局路由：
 

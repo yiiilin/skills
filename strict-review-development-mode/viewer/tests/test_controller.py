@@ -325,6 +325,68 @@ class ControllerValidationTests(unittest.TestCase):
         self.assertEqual(["human:alice", "openai:gpt-5.4"], [packet["target_agent"] for packet in packets])
         self.assertEqual(["item:review_agent", "item:implementation_agent"], [packet["routing_source"] for packet in packets])
 
+    def test_set_routing_records_user_global_agent_preferences(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(1, "item-1", "One", status="ready", plan="- 待填写"),
+                make_item(
+                    2,
+                    "item-2",
+                    "Two",
+                    status="implemented",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                ),
+                make_item(3, "item-3", "Three", status="ready"),
+                make_item(4, "item-4", "Four", status="ready"),
+            )
+        )
+
+        payload = controller.set_agent_routing(
+            path,
+            planning_agent="codex",
+            implementation_agent="claude",
+            review_agent="gemini",
+        )
+
+        document = path.read_text(encoding="utf-8")
+        packets = payload["dispatch_packets"]
+        self.assertIn("- planning_agent：codex", document)
+        self.assertIn("- implementation_agent：claude", document)
+        self.assertIn("- review_agent：gemini", document)
+        self.assertEqual(["gemini", "codex", "claude", "claude"], [packet["target_agent"] for packet in packets])
+
+    def test_set_routing_records_user_item_agent_preference(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(1, "item-1", "One", status="ready"),
+                make_item(2, "item-2", "Two", status="ready"),
+                make_item(3, "item-3", "Three", status="ready"),
+                make_item(4, "item-4", "Four", status="ready"),
+            )
+        )
+
+        payload = controller.set_agent_routing(path, item_id="item-2", implementation_agent="openai:gpt-5.4")
+
+        packets = payload["dispatch_packets"]
+        packet_by_item = {packet["item_id"]: packet for packet in packets}
+        self.assertIn("- implementation_agent：openai:gpt-5.4", path.read_text(encoding="utf-8"))
+        self.assertEqual("openai:gpt-5.4", packet_by_item["item-2"]["target_agent"])
+        self.assertEqual("item:implementation_agent", packet_by_item["item-2"]["routing_source"])
+
+    def test_item_routing_rejects_global_only_fields(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(1, "item-1", "One"),
+                make_item(2, "item-2", "Two"),
+                make_item(3, "item-3", "Three"),
+                make_item(4, "item-4", "Four"),
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "item routing only supports"):
+            controller.set_agent_routing(path, item_id="item-1", default_agent="claude")
+
     def test_start_rejects_shared_surface_conflict_with_active_item(self) -> None:
         path = write_temp_checklist(
             build_checklist(
@@ -425,6 +487,39 @@ class ControllerValidationTests(unittest.TestCase):
 
             self.assertEqual(0, exit_code)
             self.assertIn("## 任务归属判定", path.read_text(encoding="utf-8"))
+            self.assertIn("- fallback_agent：current", path.read_text(encoding="utf-8"))
+
+    def test_cli_set_routing_accepts_user_agent_preferences(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(1, "item-1", "One"),
+                make_item(2, "item-2", "Two"),
+                make_item(3, "item-3", "Three"),
+                make_item(4, "item-4", "Four"),
+            )
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            exit_code = controller.main(
+                [
+                    "set-routing",
+                    "--checklist",
+                    str(path),
+                    "--planning-agent",
+                    "codex",
+                    "--implementation-agent",
+                    "claude",
+                    "--review-agent",
+                    "gemini",
+                    "--json",
+                ]
+            )
+
+        document = path.read_text(encoding="utf-8")
+        self.assertEqual(0, exit_code)
+        self.assertIn("- planning_agent：codex", document)
+        self.assertIn("- implementation_agent：claude", document)
+        self.assertIn("- review_agent：gemini", document)
 
     def test_cli_diagram_prints_mermaid_state_machine(self) -> None:
         stdout = io.StringIO()

@@ -38,6 +38,8 @@
 
 `dispatch_packets` 只表达路由意图，不写死外部调用参数。用户只需要和 coordinator 沟通；coordinator 可按 `target_agent` 把 planning、implementation、rework、review 分别交给 Codex、Claude、Gemini、人工 reviewer 或其他 agent，并自行决定模型、参数和上下文传递方式。
 
+coordinator 不需要在每次启动时主动询问 agent 选择；如果用户主动说明“规划/开发/审核分别用哪个 agent”或“某个 item 用哪个 agent”，coordinator 使用 `controller.py set-routing` 写入全局或 item 级路由，之后 `cycle --json` 会自动在 packet 中带出对应 `target_agent`。
+
 目录内容：
 
 - `strict-review-development-mode/SKILL.md`

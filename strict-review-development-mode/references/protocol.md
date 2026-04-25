@@ -73,6 +73,15 @@
 
 agent 名称是不透明字符串，controller 不校验具体平台，也不生成外部调用参数。`codex`、`claude`、`gemini`、`human:alice`、`openai:gpt-5.4` 都只是路由标签。coordinator 负责和用户沟通、选择实际调用工具、模型、参数、认证方式和上下文传递方式。
 
+coordinator 不需要在每次启动时主动询问 agent 选择。当用户主动表达 agent 偏好，或请求本身已经包含 agent 偏好时，coordinator 必须把偏好写入 checklist：
+
+```bash
+python3 strict-review-development-mode/controller.py set-routing --checklist <checklist.md> --planning-agent codex --implementation-agent claude --review-agent gemini --json
+python3 strict-review-development-mode/controller.py set-routing --checklist <checklist.md> --item item-2 --implementation-agent gemini --json
+```
+
+全局 `set-routing` 可写入 `coordinator_agent`、`default_agent`、`fallback_agent`、`planning_agent`、`implementation_agent`、`rework_agent`、`review_agent`。带 `--item` 时只允许写入 `planning_agent`、`implementation_agent`、`rework_agent`、`review_agent`，避免把全局偏好误绑定到单个事项。
+
 ## 状态语义
 
 - `blocked`：依赖未完成，或当前 cycle 不能安全推进。
