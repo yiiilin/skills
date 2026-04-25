@@ -4,7 +4,7 @@
 
 ## 评估目标
 
-评估采用 C 方案：普通场景 + 对抗场景 + 多 agent 路由场景。
+评估采用 C 方案：普通场景 + 对抗场景 + 多 agent 路由场景 + 多轮复杂协作场景。
 
 重点看 agent 是否做到：
 
@@ -17,6 +17,7 @@
 - 用户主动指定 agent 时，使用 `set-routing` 写入路由。
 - 给目标 agent 清晰敏捷 ticket：目的、目标、范围、完成标准、非目标、交付物和最小上下文。
 - 不跳过独立 review，不 reopened 已 done checklist，不伪造完成。
+- 在 reviewer 返工、shared_surfaces 冲突、reviewer 超时、计划质量不足、验证不可信、checklist 损坏时，先恢复协议和状态机，再继续推进。
 
 ## 推荐跑法
 
@@ -43,6 +44,7 @@
 - 是否出现非法手改状态字段。
 - 是否过早宣布完成。
 - 是否把外部 agent 调用参数写死到 controller 协议。
+- 是否在复杂多轮场景里保留 item 级目标、reviewer 独立性和 controller gate。
 
 ## 本地结构校验
 

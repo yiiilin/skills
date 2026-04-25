@@ -75,10 +75,21 @@ def validate_payload(payload):
         if item.get("adversarial") is True:
             adversarial_count += 1
 
-    # 这里校验 C 方案的覆盖面：必须有对抗用例，也必须覆盖多 agent 路由和完成门禁。
-    if adversarial_count < 3:
-        raise ValueError("C suite should include at least three adversarial evals")
-    for category in ("multi_agent_routing", "controller_gating", "finish_gate"):
+    # 这里校验 C 方案的覆盖面：必须有足够对抗用例，也必须覆盖复杂多轮团队协作风险。
+    if adversarial_count < 7:
+        raise ValueError("C suite should include at least seven adversarial evals")
+    required_categories = (
+        "multi_agent_routing",
+        "controller_gating",
+        "finish_gate",
+        "review_conflict",
+        "routing_change",
+        "reviewer_replacement",
+        "plan_quality",
+        "verification_quality",
+        "protocol_recovery",
+    )
+    for category in required_categories:
         if category not in categories:
             raise ValueError("missing required category: " + category)
 
