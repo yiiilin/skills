@@ -47,6 +47,7 @@ coordinator 不需要在每次启动时主动询问 agent 选择；如果用户�
 - `strict-review-development-mode/SKILL.md`
 - `strict-review-development-mode/checklist-template.md`
 - `strict-review-development-mode/controller.py`（协议校验、状态机迁移、cycle 调度包输出）
+- `strict-review-development-mode/evals/`（C 方案强审评估用例：普通场景、对抗场景、多 agent 路由场景）
 - `strict-review-development-mode/references/protocol.md`（完整协议参考）
 - `strict-review-development-mode/references/workflow-state-machine.md`（工作流状态转换图）
 - `strict-review-development-mode/viewer/`（可选本地只读 progress viewer，用于查看 DAG / queue / item 详情，不作为调度真相）

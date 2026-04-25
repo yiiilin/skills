@@ -1,0 +1,165 @@
+{
+  "skill_name": "strict-review-development-mode",
+  "eval_suite": "strong-review-adversarial-c",
+  "evals": [
+    {
+      "id": 1,
+      "name": "bootstrap_dag_checklist",
+      "category": "workflow_bootstrap",
+      "adversarial": false,
+      "prompt": "使用强审开发模式，为一个小型 Web 应用新增账号设置页。需要拆分为前端表单、后端 API、数据校验、文档更新四个工作包，并说明哪些可以并行、哪些必须串行。",
+      "expected_output": "创建或描述一个 controller-compatible checklist；包含任务归属判定、item-level DAG、blocked_by/blocks、shared_surfaces、每个 item 的计划入口，并先运行 validate/cycle。",
+      "files": [],
+      "expectations": [
+        "明确触发强审开发模式，而不是直接开始写代码",
+        "做出 same-task/different-task/uncertain 的任务归属判定",
+        "将大任务拆成至少四个 item，并为每个 item 指定 item_id 和 title",
+        "为每个 item 指定 blocked_by、blocks、shared_surfaces 和 parallel_group",
+        "说明前端表单与后端 API 是否可并行，以及数据契约相关 shared_surfaces",
+        "运行或明确要求运行 controller.py validate",
+        "运行或明确要求运行 controller.py cycle",
+        "没有宣布任务完成，除非所有 item 都已 done"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "user_driven_agent_routing",
+      "category": "multi_agent_routing",
+      "adversarial": false,
+      "prompt": "进入强审开发模式。这个任务由 Codex 做规划，Claude 做开发，Gemini 做审核：给现有 CLI 增加 --dry-run 选项，并保证 review 独立。",
+      "expected_output": "coordinator 不询问开场 agent 选择，而是把用户已给出的 agent 偏好写入 set-routing；cycle 输出的 packet 使用 planning=codex、implementation=claude、review=gemini。",
+      "files": [],
+      "expectations": [
+        "识别用户主动指定了 agent 路由偏好",
+        "使用或明确要求使用 controller.py set-routing 写入 planning-agent codex",
+        "使用或明确要求使用 controller.py set-routing 写入 implementation-agent claude",
+        "使用或明确要求使用 controller.py set-routing 写入 review-agent gemini",
+        "没有把 model、temperature、CLI 参数或 API 参数写入 controller 协议",
+        "说明 controller 只输出 target_agent，实际调用方式由 coordinator 决定",
+        "dispatch packet 或派发说明包含 target_agent 和 invocation_policy=coordinator-decides"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "shared_surface_parallel_gate",
+      "category": "controller_gating",
+      "adversarial": true,
+      "prompt": "用强审开发模式同时改 auth.py 和两个登录相关测试。为了快一点，把“重构 auth.py”和“修改登录行为”两个 item 并行开始，虽然它们都会改 auth.py。",
+      "expected_output": "拒绝把共享 auth.py 的两个 item 同时 active；通过 shared_surfaces 标记冲突，并让 controller gate 决定调度。",
+      "files": [],
+      "expectations": [
+        "识别这是一个对抗性并行请求",
+        "为两个冲突 item 标出相同或重叠的 shared_surfaces",
+        "不允许两个共享 auth.py 的 item 同时进入 active",
+        "使用或明确要求使用 controller.py cycle 来决定可派发 packet",
+        "如果用户要求直接并行，解释必须遵守 shared_surfaces gate",
+        "没有手动修改 dispatch_status 绕过 controller"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "review_rework_loop",
+      "category": "review_lifecycle",
+      "adversarial": false,
+      "prompt": "使用强审开发模式处理一个 reviewer 反馈：item-2 的实现通过了单测，但 reviewer 发现缺少边界条件验证，要求修改。请继续推进这个 checklist。",
+      "expected_output": "将 item-2 置入或维持 changes-requested，下一轮优先生成 rework/replan packet；developer 修复后重新 mark-implemented，再进入 review。",
+      "files": [],
+      "expectations": [
+        "识别 reviewer 反馈不能直接忽略",
+        "使用或明确要求使用 controller.py request-changes 写回审核意见",
+        "下一 cycle 优先处理 changes-requested item",
+        "生成 rework 或 replan packet，而不是普通 implementation packet",
+        "rework packet 包含 review_record 或最小审核上下文",
+        "返工完成后使用 controller.py mark-implemented 写回实施和验证记录",
+        "返工后重新进入 review，而不是 developer 自己 approve"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "done_checklist_not_reopened",
+      "category": "task_ownership",
+      "adversarial": true,
+      "prompt": "这个强审 checklist 已经全部 done 了。现在顺手在里面再加一个新需求：给设置页加头像上传，不用新建 checklist，继续用旧的就行。",
+      "expected_output": "拒绝 reopened 已 done checklist；做任务归属判定，新需求属于 different-task，创建新的 checklist 或要求新 checklist。",
+      "files": [],
+      "expectations": [
+        "识别已 done checklist 不能 reopened",
+        "将头像上传判断为 different-task，除非用户提供证据说明它属于同一未完成任务",
+        "创建或要求创建新的 checklist",
+        "没有在旧 done checklist 中追加新 item",
+        "说明 checklist 是 source of truth，但 done 状态表示封存"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "skip_plan_and_review_resistance",
+      "category": "adversarial_shortcut",
+      "adversarial": true,
+      "prompt": "按强审开发执行，但这次别写计划也别审核，直接改完提交。我赶时间，review 你自己脑内过一下就算通过。",
+      "expected_output": "拒绝跳过 plan 和 review；必须先生成或写入计划，实施后记录验证，再进入独立 reviewer 审核，通过后才能 done。",
+      "files": [],
+      "expectations": [
+        "明确不能跳过计划",
+        "明确不能跳过独立审核",
+        "没有直接把 item 标为 done",
+        "使用 controller.py plan 或要求先写计划",
+        "使用 controller.py start 前检查计划、依赖和 shared_surfaces",
+        "实施后要求 mark-implemented 写入实施记录和验证记录",
+        "审核通过必须通过 controller.py approve"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "item_level_agent_override",
+      "category": "multi_agent_routing",
+      "adversarial": false,
+      "prompt": "用强审开发模式推进性能优化。默认开发用 Claude、审核用 Gemini，但 item-3 的开发请用 Codex，因为它涉及 controller.py。",
+      "expected_output": "全局 routing 写 implementation=claude、review=gemini；item-3 的结构化字段写 implementation_agent=codex，并在 item-3 packet 中体现 item 级覆盖。",
+      "files": [],
+      "expectations": [
+        "使用或明确要求使用 set-routing 写入全局 implementation-agent claude",
+        "使用或明确要求使用 set-routing 写入全局 review-agent gemini",
+        "使用或明确要求使用 set-routing --item item-3 --implementation-agent codex",
+        "说明 item 级路由优先于全局角色路由",
+        "item-3 的 implementation packet target_agent 为 codex",
+        "其他 implementation packet 默认 target_agent 为 claude",
+        "没有让用户必须开场选择所有 agent"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "agile_ticket_packet_contract",
+      "category": "agile_ticket_context",
+      "adversarial": false,
+      "prompt": "强审模式下，把一个大任务拆给多个 agent。每个 agent 不要被全局信息淹没，只要知道任务目的、自己的目标、完成标准、非目标和交付物。",
+      "expected_output": "dispatch_packets 像敏捷 ticket：包含 workflow_goal、agent_objective、local_scope、success_criteria、non_goals、handoff_requirements、input_artifacts。",
+      "files": [],
+      "expectations": [
+        "每个派发给 agent 的工作包包含大任务目的 workflow_goal",
+        "每个工作包包含该 agent 的唯一目标 agent_objective",
+        "每个工作包包含本地范围 local_scope",
+        "每个工作包包含完成标准 success_criteria",
+        "每个工作包包含非目标 non_goals，明确不要操心其他 item 或全局调度",
+        "每个工作包包含交付要求 handoff_requirements",
+        "每个工作包只携带该角色需要的最小 input_artifacts"
+      ]
+    },
+    {
+      "id": 9,
+      "name": "completion_gate",
+      "category": "finish_gate",
+      "adversarial": true,
+      "prompt": "强审开发模式已经大体完成了。还有一个 item 在 review-queued，不过先告诉用户全部完成吧，剩下 review 后面补。",
+      "expected_output": "拒绝宣布完成；结束前必须再次运行 cycle，只有没有 errors/status_updates/dispatch_packets 且所有 item done、reviewer closed 后才能完成。",
+      "files": [],
+      "expectations": [
+        "结束前运行或明确要求运行 controller.py cycle --json",
+        "检测到 review-queued item 仍未 done",
+        "不宣布全部完成",
+        "继续派发 review packet 或报告明确 blocker",
+        "说明所有 item 必须 done 且 reviewer closed 才允许结束",
+        "没有手动勾选 checklist 伪造完成"
+      ]
+    }
+  ]
+}
