@@ -16,6 +16,7 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 5. 每个 cycle 必须先运行 controller；controller 返回 error 时先修 error，不得继续推进。
 6. 有 `dispatch_packets` 时必须消费 packet；能并行就并行派发，不能并行就按 packet 顺序本地执行。
 7. 结束前必须再次运行 `cycle`；只有所有 item 都是 `done` 才能宣布完成。
+8. 用户只需要和 coordinator 沟通；planner、developer、reviewer 可以是任意 agent，由 coordinator 根据 packet 路由和当前环境决定如何调用。
 
 ## 入口流程
 
@@ -40,7 +41,7 @@ python3 strict-review-development-mode/controller.py cycle --checklist <checklis
 python3 strict-review-development-mode/controller.py cycle --checklist <checklist.md> --write --json
 ```
 
-7. 如果 `cycle` 输出 `dispatch_packets`，按 packet 的 `command` 和 `prompt` 执行。
+7. 如果 `cycle` 输出 `dispatch_packets`，coordinator 根据 `target_agent`、`role`、`prompt` 派发工作包，并自行决定调用方式和参数。
 
 ## 常用命令
 
@@ -59,6 +60,33 @@ python3 strict-review-development-mode/controller.py approve --checklist <checkl
 ```
 
 `items-json` 是工作包数组，每项至少包含 `item_id` 和 `title`，可包含 `blocked_by`、`shared_surfaces`、`parallel_group`。
+
+## Agent 路由策略
+
+checklist 可包含全局路由：
+
+```md
+## Agent 路由策略
+- coordinator_agent：codex
+- default_agent：current
+- fallback_agent：current
+- planning_agent：codex
+- implementation_agent：claude
+- rework_agent：claude
+- review_agent：gemini
+- invocation_policy：coordinator-decides
+```
+
+也可以在 item 的 `结构化字段` 中覆盖：
+
+```md
+- implementation_agent：claude
+- review_agent：gemini
+```
+
+优先级为：item 级 agent > 全局角色 agent > `default_agent` > `current`。
+
+agent 名称只作为不透明字符串透传，例如 `codex`、`claude`、`gemini`、`human:alice`、`openai:gpt-5.4`。controller 不生成 model、temperature、CLI 参数、API 参数或认证信息；这些都由 coordinator 决策。
 
 ## 状态转换图
 
@@ -89,7 +117,17 @@ stateDiagram-v2
 3. `planning`：ready 但尚无具体计划。
 4. `implementation`：ready 且计划已写明，可进入实施。
 
-packet 是 C 方案的通用接口。controller 不直接调用任何平台私有 subagent API；Codex、Claude、OpenAI、CI worker 或人工 reviewer 都可以消费 packet，再用 controller 命令写回结果。
+packet 是 C 方案的通用接口。controller 不直接调用任何平台私有 subagent API；Codex、Claude、Gemini、OpenAI、CI worker 或人工 reviewer 都可以消费 packet，再用 controller 命令写回结果。
+
+每个 packet 会包含：
+
+- `role`：`planning`、`implementation`、`rework` 或 `review`
+- `target_agent`：建议交给哪个 agent
+- `fallback_agent`：目标不可用时的回退
+- `routing_source`：路由来自全局策略还是 item 覆盖
+- `invocation_policy`：固定为 `coordinator-decides`
+- `prompt`：工作包说明
+- `command`：结果写回 controller 时的建议命令
 
 ## 何时读取参考文档
 

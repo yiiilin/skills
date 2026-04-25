@@ -36,6 +36,8 @@
 
 `controller.py` 是通用 CLI，不绑定具体 agent 平台。它提供 B 方案能力（validator + state machine CLI），并通过 `dispatch_packets` 预留 C 方案能力（外部 orchestrator 可以消费 packet 后派发 subagent/reviewer，再用 controller 命令写回结果）。
 
+`dispatch_packets` 只表达路由意图，不写死外部调用参数。用户只需要和 coordinator 沟通；coordinator 可按 `target_agent` 把 planning、implementation、rework、review 分别交给 Codex、Claude、Gemini、人工 reviewer 或其他 agent，并自行决定模型、参数和上下文传递方式。
+
 目录内容：
 
 - `strict-review-development-mode/SKILL.md`

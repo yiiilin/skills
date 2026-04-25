@@ -18,6 +18,9 @@ CONTROLLER_PATH = MODULE_DIR / "controller.py"
 IMPLEMENTATION_LIMIT = 4
 REVIEWER_LIMIT = 2
 FINISHED_STATUS = "done"
+DEFAULT_AGENT = "current"
+# controller 只表达“由协调者决定调用方式”，不承载任何平台私有调用参数。
+INVOCATION_POLICY = "coordinator-decides"
 KNOWN_STATUSES = {
     "blocked",
     "ready",
@@ -77,6 +80,23 @@ FENCE_RE = re.compile(r"^\s*(?P<fence>`{3,}|~{3,})")
 STRUCTURED_LINE_RE = re.compile(r"^(\s*-\s+)([^：:]+?)(\s*[：:]\s*)(.*)$")
 CHECKLIST_ITEM_RE = re.compile(r"^(\s*-\s+\[)(?: |x|X)(\]\s+\d+\.\s+)(.*)$")
 
+# 不同 packet 类型会优先读取不同的路由字段；这些字段都是不透明 agent 标签。
+ROUTE_KEYS_BY_PACKET_TYPE = {
+    "planning": ("planning_agent",),
+    "replan": ("planning_agent", "rework_agent"),
+    "implementation": ("implementation_agent",),
+    "rework": ("rework_agent", "implementation_agent"),
+    "review": ("review_agent",),
+}
+
+ROLE_BY_PACKET_TYPE = {
+    "planning": "planning",
+    "replan": "planning",
+    "implementation": "implementation",
+    "rework": "rework",
+    "review": "review",
+}
+
 
 @dataclass(frozen=True)
 class ControllerViolation:
@@ -101,6 +121,11 @@ class ControllerViolation:
 @dataclass(frozen=True)
 class DispatchPacket:
     packet_type: str
+    role: str
+    target_agent: str
+    fallback_agent: str
+    routing_source: str
+    invocation_policy: str
     item_id: str
     title: str
     command: str
@@ -112,6 +137,11 @@ class DispatchPacket:
     def to_dict(self) -> Dict[str, object]:
         return {
             "packet_type": self.packet_type,
+            "role": self.role,
+            "target_agent": self.target_agent,
+            "fallback_agent": self.fallback_agent,
+            "routing_source": self.routing_source,
+            "invocation_policy": self.invocation_policy,
             "item_id": self.item_id,
             "title": self.title,
             "command": self.command,
@@ -161,8 +191,9 @@ def build_cycle_plan(checklist_path: Union[str, Path]) -> Dict[str, object]:
     violations = _build_parser_violations(snapshot) + _build_protocol_violations(parsed, snapshot)
     has_errors = any(violation.severity == "error" for violation in violations)
     item_by_id = _item_by_id(items)
+    agent_routing = _agent_routing_policy(parsed)
     status_updates = [] if has_errors else _recommended_status_updates(items, item_by_id)
-    packets = [] if has_errors else _build_dispatch_packets(Path(checklist_path), items, item_by_id)
+    packets = [] if has_errors else _build_dispatch_packets(Path(checklist_path), items, item_by_id, agent_routing)
     active_items = [item["item_id"] for item in items if item.get("dispatch_status") == "active"]
     reviewing_items = [item["item_id"] for item in items if item.get("dispatch_status") == "in-review"]
     return {
@@ -174,6 +205,7 @@ def build_cycle_plan(checklist_path: Union[str, Path]) -> Dict[str, object]:
         },
         "active_items": active_items,
         "in_review_items": reviewing_items,
+        "agent_routing": agent_routing,
         "status_updates": status_updates,
         "dispatch_packets": [packet.to_dict() for packet in packets],
         "next_action": _next_action_text(status_updates, packets, violations),
@@ -369,6 +401,15 @@ def init_checklist(
         "- 首次等待窗口：10min",
         "- 二次探测窗口：10-20min",
         "- 硬超时门槛：30min",
+        "",
+        "## Agent 路由策略",
+        "- coordinator_agent：current",
+        "- default_agent：current",
+        "- planning_agent：current",
+        "- implementation_agent：current",
+        "- rework_agent：current",
+        "- review_agent：current",
+        "- invocation_policy：coordinator-decides",
         "",
         "## 任务归属判定",
         f"- 当前请求：{request}",
@@ -624,10 +665,77 @@ def _recommended_status_updates(items: List[Dict[str, Any]], item_by_id: Dict[st
     return updates
 
 
+def _agent_routing_policy(parsed: Any) -> Dict[str, str]:
+    section_text = getattr(parsed, "top_level_sections", {}).get("Agent 路由策略", "")
+    fields = _parse_bullet_fields(section_text)
+    # 保持调用策略固定：即使 checklist 误填了平台参数，controller 也不会把它变成协议输出。
+    policy: Dict[str, str] = {
+        "coordinator_agent": _agent_name(fields.get("coordinator_agent")) or DEFAULT_AGENT,
+        "default_agent": _agent_name(fields.get("default_agent")) or DEFAULT_AGENT,
+        "fallback_agent": _agent_name(fields.get("fallback_agent")) or DEFAULT_AGENT,
+        "planning_agent": _agent_name(fields.get("planning_agent")) or "",
+        "implementation_agent": _agent_name(fields.get("implementation_agent")) or "",
+        "rework_agent": _agent_name(fields.get("rework_agent")) or "",
+        "review_agent": _agent_name(fields.get("review_agent")) or "",
+        "invocation_policy": INVOCATION_POLICY,
+    }
+    return policy
+
+
+def _resolve_agent_route(
+    packet_type: str,
+    item: Dict[str, Any],
+    agent_routing: Dict[str, str],
+) -> Dict[str, str]:
+    role = ROLE_BY_PACKET_TYPE.get(packet_type, packet_type)
+    structured_fields = item.get("structured_fields") if isinstance(item.get("structured_fields"), dict) else {}
+    route_keys = ROUTE_KEYS_BY_PACKET_TYPE.get(packet_type, ())
+
+    # item 级覆盖最精确，适合把某个高风险事项交给指定 reviewer 或指定实现 agent。
+    for route_key in route_keys:
+        agent_name = _agent_name(structured_fields.get(route_key))
+        if agent_name:
+            return _route_result(role, agent_name, _fallback_agent(agent_routing), f"item:{route_key}")
+
+    # 全局角色路由适合“规划用 A、开发用 B、审核用 C”的常规多 agent 工作流。
+    for route_key in route_keys:
+        agent_name = _agent_name(agent_routing.get(route_key))
+        if agent_name:
+            return _route_result(role, agent_name, _fallback_agent(agent_routing), f"global:{route_key}")
+
+    # 没有显式路由时回到 current，使 skill 在不支持多 agent 的环境里仍可直接使用。
+    default_agent = _agent_name(agent_routing.get("default_agent")) or DEFAULT_AGENT
+    routing_source = "global:default_agent" if _agent_name(agent_routing.get("default_agent")) else "default:current"
+    return _route_result(role, default_agent, _fallback_agent(agent_routing), routing_source)
+
+
+def _route_result(role: str, target_agent: str, fallback_agent: str, routing_source: str) -> Dict[str, str]:
+    return {
+        "role": role,
+        "target_agent": target_agent,
+        "fallback_agent": fallback_agent,
+        "routing_source": routing_source,
+    }
+
+
+def _fallback_agent(agent_routing: Dict[str, str]) -> str:
+    return _agent_name(agent_routing.get("fallback_agent")) or DEFAULT_AGENT
+
+
+def _agent_name(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text or text.casefold() in PLACEHOLDER_VALUES:
+        return ""
+    return text
+
+
 def _build_dispatch_packets(
     checklist_path: Path,
     items: List[Dict[str, Any]],
     item_by_id: Dict[str, Dict[str, Any]],
+    agent_routing: Dict[str, str],
 ) -> List[DispatchPacket]:
     packets: List[DispatchPacket] = []
     active_count = sum(1 for item in items if item.get("dispatch_status") == "active")
@@ -645,9 +753,9 @@ def _build_dispatch_packets(
         if surfaces.intersection(active_surfaces | selected_surfaces):
             continue
         if _is_blankish(item.get("plan")):
-            packets.append(_planning_packet(checklist_path, item, "replan"))
+            packets.append(_planning_packet(checklist_path, item, "replan", agent_routing))
         else:
-            packets.append(_implementation_packet(checklist_path, item, "rework"))
+            packets.append(_implementation_packet(checklist_path, item, "rework", agent_routing))
         selected_surfaces.update(surfaces)
         active_count += 1
 
@@ -658,7 +766,7 @@ def _build_dispatch_packets(
             break
         if _is_blankish(item.get("implementation_record")) or _is_blankish(item.get("verification_record")):
             continue
-        packets.append(_review_packet(checklist_path, item))
+        packets.append(_review_packet(checklist_path, item, agent_routing))
         reviewer_count += 1
 
     for item in items:
@@ -672,16 +780,21 @@ def _build_dispatch_packets(
         if surfaces.intersection(active_surfaces | selected_surfaces):
             continue
         if _is_blankish(item.get("plan")):
-            packets.append(_planning_packet(checklist_path, item, "planning"))
+            packets.append(_planning_packet(checklist_path, item, "planning", agent_routing))
         else:
-            packets.append(_implementation_packet(checklist_path, item, "implementation"))
+            packets.append(_implementation_packet(checklist_path, item, "implementation", agent_routing))
         selected_surfaces.update(surfaces)
         active_count += 1
 
     return packets
 
 
-def _planning_packet(checklist_path: Path, item: Dict[str, Any], packet_type: str) -> DispatchPacket:
+def _planning_packet(
+    checklist_path: Path,
+    item: Dict[str, Any],
+    packet_type: str,
+    agent_routing: Dict[str, str],
+) -> DispatchPacket:
     item_id = _item_id(item)
     title = str(item.get("title") or item.get("heading") or item_id)
     command = f"python3 {CONTROLLER_PATH} plan --checklist {checklist_path} --item {item_id} --text-file <plan-file>"
@@ -689,8 +802,14 @@ def _planning_packet(checklist_path: Path, item: Dict[str, Any], packet_type: st
         f"为 {item_id} - {title} 写计划。计划必须写清改动范围、文件 ownership、DAG 依赖、"
         "shared_surfaces、并行性、验证方式和风险边界；写好后用 controller plan 写回。"
     )
+    route = _resolve_agent_route(packet_type, item, agent_routing)
     return DispatchPacket(
         packet_type=packet_type,
+        role=route["role"],
+        target_agent=route["target_agent"],
+        fallback_agent=route["fallback_agent"],
+        routing_source=route["routing_source"],
+        invocation_policy=INVOCATION_POLICY,
         item_id=item_id,
         title=title,
         command=command,
@@ -701,7 +820,12 @@ def _planning_packet(checklist_path: Path, item: Dict[str, Any], packet_type: st
     )
 
 
-def _implementation_packet(checklist_path: Path, item: Dict[str, Any], packet_type: str) -> DispatchPacket:
+def _implementation_packet(
+    checklist_path: Path,
+    item: Dict[str, Any],
+    packet_type: str,
+    agent_routing: Dict[str, str],
+) -> DispatchPacket:
     item_id = _item_id(item)
     title = str(item.get("title") or item.get("heading") or item_id)
     command = f"python3 {CONTROLLER_PATH} start --checklist {checklist_path} --item {item_id} --agent <agent-id>"
@@ -709,8 +833,14 @@ def _implementation_packet(checklist_path: Path, item: Dict[str, Any], packet_ty
         f"实施 {item_id} - {title}。只处理该事项计划内内容；完成后用 controller mark-implemented "
         "写入实施记录和验证记录。"
     )
+    route = _resolve_agent_route(packet_type, item, agent_routing)
     return DispatchPacket(
         packet_type=packet_type,
+        role=route["role"],
+        target_agent=route["target_agent"],
+        fallback_agent=route["fallback_agent"],
+        routing_source=route["routing_source"],
+        invocation_policy=INVOCATION_POLICY,
         item_id=item_id,
         title=title,
         command=command,
@@ -721,7 +851,7 @@ def _implementation_packet(checklist_path: Path, item: Dict[str, Any], packet_ty
     )
 
 
-def _review_packet(checklist_path: Path, item: Dict[str, Any]) -> DispatchPacket:
+def _review_packet(checklist_path: Path, item: Dict[str, Any], agent_routing: Dict[str, str]) -> DispatchPacket:
     item_id = _item_id(item)
     title = str(item.get("title") or item.get("heading") or item_id)
     command = f"python3 {CONTROLLER_PATH} assign-reviewer --checklist {checklist_path} --item {item_id} --reviewer <reviewer-id>"
@@ -729,8 +859,14 @@ def _review_packet(checklist_path: Path, item: Dict[str, Any]) -> DispatchPacket
         f"审核 {item_id} - {title}。检查是否符合计划、DAG、shared_surfaces 和验证记录；"
         "若有问题用 request-changes，若通过用 approve。"
     )
+    route = _resolve_agent_route("review", item, agent_routing)
     return DispatchPacket(
         packet_type="review",
+        role=route["role"],
+        target_agent=route["target_agent"],
+        fallback_agent=route["fallback_agent"],
+        routing_source=route["routing_source"],
+        invocation_policy=INVOCATION_POLICY,
         item_id=item_id,
         title=title,
         command=command,
@@ -888,6 +1024,16 @@ def _extract_bullet_value(section_text: str, key: str) -> str:
         if match and match.group(2).strip() == key:
             return match.group(4).strip()
     return ""
+
+
+def _parse_bullet_fields(section_text: str) -> Dict[str, str]:
+    fields: Dict[str, str] = {}
+    for line in section_text.splitlines():
+        match = STRUCTURED_LINE_RE.match(line)
+        if not match:
+            continue
+        fields[match.group(2).strip()] = match.group(4).strip()
+    return fields
 
 
 def _normalize_list(value: Any) -> List[str]:

@@ -12,6 +12,16 @@
 - 二次探测窗口：10-20min
 - 硬超时门槛：30min
 
+## Agent 路由策略
+- coordinator_agent：current
+- default_agent：current
+- fallback_agent：current
+- planning_agent：current
+- implementation_agent：current
+- rework_agent：current
+- review_agent：current
+- invocation_policy：coordinator-decides
+
 ## 任务归属判定
 - 当前请求：<待填写>
 - 判定结果：different-task

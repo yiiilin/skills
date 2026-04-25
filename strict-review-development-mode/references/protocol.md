@@ -9,6 +9,7 @@
 - 队列小节只是派生视图，不参与真实调度。
 - 关键字段只能通过 `controller.py` 修改：`dispatch_status`、`assigned_subagent`、`reviewer_id`、`reviewer_state`、勾选状态。
 - controller 返回 error 时，不得继续状态迁移。
+- 用户只和 coordinator 沟通。其他 agent 的选择由 checklist 路由策略和 coordinator 决策共同决定。
 
 ## 任务归属判定
 
@@ -40,6 +41,38 @@
 - `dispatch_status`
 - `assigned_subagent`
 
+可选 item 级路由覆盖：
+
+- `planning_agent`
+- `implementation_agent`
+- `rework_agent`
+- `review_agent`
+
+## Agent 路由策略
+
+全局路由策略写在 checklist 顶层：
+
+```md
+## Agent 路由策略
+- coordinator_agent：current
+- default_agent：current
+- fallback_agent：current
+- planning_agent：current
+- implementation_agent：current
+- rework_agent：current
+- review_agent：current
+- invocation_policy：coordinator-decides
+```
+
+路由优先级：
+
+1. item 级 agent 覆盖
+2. 全局角色 agent
+3. `default_agent`
+4. `current`
+
+agent 名称是不透明字符串，controller 不校验具体平台，也不生成外部调用参数。`codex`、`claude`、`gemini`、`human:alice`、`openai:gpt-5.4` 都只是路由标签。coordinator 负责和用户沟通、选择实际调用工具、模型、参数、认证方式和上下文传递方式。
+
 ## 状态语义
 
 - `blocked`：依赖未完成，或当前 cycle 不能安全推进。
@@ -66,6 +99,16 @@ python3 strict-review-development-mode/controller.py cycle --checklist <checklis
 3. `ready` -> `planning` 或 `implementation`
 
 实施并发上限为 `4`，reviewer 并发上限为 `2`。
+
+packet 包含路由字段：
+
+- `role`
+- `target_agent`
+- `fallback_agent`
+- `routing_source`
+- `invocation_policy`
+
+`invocation_policy` 固定为 `coordinator-decides`，表示 controller 只给出路由意图，不规定外部 agent 调用参数。
 
 ## shared_surfaces 冲突
 
@@ -115,4 +158,3 @@ python3 strict-review-development-mode/controller.py cycle --checklist <checklis
 - 所有 item 均为 `done`
 - reviewer 均已关闭
 - checklist 勾选状态已同步
-

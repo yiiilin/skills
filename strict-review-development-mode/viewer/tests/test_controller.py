@@ -48,7 +48,9 @@ def make_item(
     implementation: str = "- 待填写",
     verification: str = "- 待填写",
     review: str = "- Reviewer：待填写\n- Reviewer 状态：待填写\n- 审核结论：待填写\n- 关闭状态：待填写",
+    extra_fields: str = "",
 ) -> str:
+    extra_block = (extra_fields.rstrip() + "\n") if extra_fields else ""
     return (
         f"## Item {number} - {title}\n"
         "### 结构化字段\n"
@@ -61,6 +63,7 @@ def make_item(
         f"- assigned_subagent：{assigned}\n"
         f"- reviewer_id：{reviewer_id}\n"
         f"- reviewer_state：{reviewer_state}\n"
+        f"{extra_block}"
         "- next_action：等待调度\n\n"
         "### 计划\n"
         f"{plan}\n\n"
@@ -73,7 +76,20 @@ def make_item(
     )
 
 
-def build_checklist(*item_blocks: str) -> str:
+def build_checklist(*item_blocks: str, routing: str = "") -> str:
+    routing_section = routing or textwrap.dedent(
+        """\
+        ## Agent 路由策略
+        - coordinator_agent：current
+        - default_agent：current
+        - fallback_agent：current
+        - planning_agent：current
+        - implementation_agent：current
+        - rework_agent：current
+        - review_agent：current
+        - invocation_policy：coordinator-decides
+        """
+    )
     return (
         textwrap.dedent(
             """\
@@ -87,6 +103,8 @@ def build_checklist(*item_blocks: str) -> str:
             - 推理强度目标：xhigh
             - 实施并行上限：4
             - reviewer 并行上限：2
+
+            {routing_section}
 
             ## 任务归属判定
             - 当前请求：测试 controller
@@ -114,7 +132,7 @@ def build_checklist(*item_blocks: str) -> str:
               item-4[Four]
             ```
             """
-        )
+        ).format(routing_section=routing_section.rstrip())
         + "\n"
         + "\n".join(item_blocks)
     )
@@ -204,6 +222,8 @@ class ControllerValidationTests(unittest.TestCase):
         self.assertEqual(["rework", "review", "review", "implementation"], [packet["packet_type"] for packet in packets])
         self.assertEqual(["item-1", "item-2", "item-3", "item-4"], [packet["item_id"] for packet in packets])
         self.assertIn("assign-reviewer", packets[1]["command"])
+        self.assertEqual(["current", "current", "current", "current"], [packet["target_agent"] for packet in packets])
+        self.assertEqual("coordinator-decides", packets[0]["invocation_policy"])
 
     def test_cycle_emits_planning_packet_before_unplanned_ready_implementation(self) -> None:
         path = write_temp_checklist(
@@ -221,6 +241,89 @@ class ControllerValidationTests(unittest.TestCase):
         self.assertEqual("planning", packets[0]["packet_type"])
         self.assertEqual("item-1", packets[0]["item_id"])
         self.assertIn("controller.py plan", packets[0]["command"])
+
+    def test_cycle_routes_packets_with_global_agent_policy_without_invocation_parameters(self) -> None:
+        routing = textwrap.dedent(
+            """\
+            ## Agent 路由策略
+            - coordinator_agent：codex
+            - default_agent：current
+            - fallback_agent：current
+            - planning_agent：codex
+            - implementation_agent：claude
+            - rework_agent：claude
+            - review_agent：gemini
+            - invocation_policy：claude --model hardcoded
+            """
+        )
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(1, "item-1", "One", status="ready", plan="- 待填写"),
+                make_item(
+                    2,
+                    "item-2",
+                    "Two",
+                    status="implemented",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                ),
+                make_item(3, "item-3", "Three", status="ready"),
+                make_item(4, "item-4", "Four", status="ready"),
+                routing=routing,
+            )
+        )
+
+        payload = controller.build_cycle_plan(path)
+
+        packets = payload["dispatch_packets"]
+        self.assertEqual("codex", payload["agent_routing"]["coordinator_agent"])
+        self.assertEqual("coordinator-decides", payload["agent_routing"]["invocation_policy"])
+        self.assertEqual(["review", "planning", "implementation", "implementation"], [packet["packet_type"] for packet in packets])
+        self.assertEqual(["gemini", "codex", "claude", "claude"], [packet["target_agent"] for packet in packets])
+        self.assertEqual(["global:review_agent", "global:planning_agent", "global:implementation_agent", "global:implementation_agent"], [packet["routing_source"] for packet in packets])
+        self.assertNotIn("model", packets[0])
+        self.assertNotIn("temperature", packets[0])
+
+    def test_item_agent_override_wins_over_global_policy(self) -> None:
+        routing = textwrap.dedent(
+            """\
+            ## Agent 路由策略
+            - default_agent：current
+            - implementation_agent：claude
+            - review_agent：gemini
+            - invocation_policy：coordinator-decides
+            """
+        )
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(
+                    1,
+                    "item-1",
+                    "One",
+                    status="implemented",
+                    blocks="[item-3, item-4]",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    extra_fields="- review_agent：human:alice",
+                ),
+                make_item(
+                    2,
+                    "item-2",
+                    "Two",
+                    status="ready",
+                    extra_fields="- implementation_agent：openai:gpt-5.4",
+                ),
+                make_item(3, "item-3", "Three", status="blocked", blocked_by="[item-1]", blocks="[]"),
+                make_item(4, "item-4", "Four", status="blocked", blocked_by="[item-1]", blocks="[]"),
+                routing=routing,
+            )
+        )
+
+        payload = controller.build_cycle_plan(path)
+
+        packets = payload["dispatch_packets"]
+        self.assertEqual(["human:alice", "openai:gpt-5.4"], [packet["target_agent"] for packet in packets])
+        self.assertEqual(["item:review_agent", "item:implementation_agent"], [packet["routing_source"] for packet in packets])
 
     def test_start_rejects_shared_surface_conflict_with_active_item(self) -> None:
         path = write_temp_checklist(
