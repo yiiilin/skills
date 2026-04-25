@@ -150,8 +150,9 @@ coordinator 派发工作时，应把这些字段连同 `prompt` 一起给目标 
 2. 开始实施：用 `controller.py start`。controller 会检查计划、依赖、并发上限和共享面冲突。
 3. 完成实施：用 `controller.py mark-implemented` 写入实施记录和验证记录。
 4. 进入审核：用 `controller.py queue-review` 和 `controller.py assign-reviewer`。
-5. 审核不通过：用 `controller.py request-changes`。
-6. 审核通过：用 `controller.py approve`，controller 会进入 `done` 并勾选 checklist。
+5. reviewer 达到硬超时且需要替换：用 `controller.py replace-reviewer`，保持 item 在 `in-review`，但替换独立 reviewer 并记录原因。
+6. 审核不通过：用 `controller.py request-changes`。
+7. 审核通过：用 `controller.py approve`，controller 会进入 `done` 并勾选 checklist。
 
 ## Reviewer 生命周期
 
@@ -160,6 +161,15 @@ coordinator 派发工作时，应把这些字段连同 `prompt` 一起给目标 
 - reviewer 不得跨 item 复用。
 - item 进入 `done` 前，相关 reviewer 必须关闭并记录。
 - 单次等待超时只是软超时；达到硬超时门槛后才允许 replacement reviewer。
+- replacement reviewer 必须通过 `controller.py replace-reviewer` 写入；不能手改 `reviewer_id`、`reviewer_state` 或审核记录。
+- 初次 reviewer 和 replacement reviewer 都不能是该 item 的 implementation agent。
+- 替换时 item 保持 `in-review`，新 reviewer 的 `reviewer_state` 为 `reviewing`，审核记录中必须保留原 reviewer 已 `replaced` 的审计线索。
+
+替换 reviewer：
+
+```bash
+python3 strict-review-development-mode/controller.py replace-reviewer --checklist <checklist.md> --item item-1 --from-reviewer <old-reviewer> --to-reviewer <new-reviewer> --reason-file <reason-file>
+```
 
 推荐 reviewer_state：
 

@@ -66,6 +66,7 @@ WORKFLOW_STATE_DIAGRAM = """stateDiagram-v2
   implemented --> review_queued: controller queue-review
   implemented --> in_review: controller assign-reviewer / reviewer 槽位可用
   review_queued --> in_review: controller assign-reviewer
+  in_review --> in_review: controller replace-reviewer / reviewer 超时
 
   in_review --> changes_requested: controller request-changes
   changes_requested --> active: controller start / rework
@@ -350,6 +351,7 @@ def assign_reviewer(checklist_path: Union[str, Path], item_id: str, reviewer_id:
     _ensure_reviewer_slot_available(snapshot["items"], item)
     _ensure_implementation_ready(item)
     _ensure_verification_ready(item)
+    _ensure_independent_reviewer(item, reviewer_id)
 
     path = Path(checklist_path)
     document = path.read_text(encoding="utf-8")
@@ -360,6 +362,51 @@ def assign_reviewer(checklist_path: Union[str, Path], item_id: str, reviewer_id:
     document = _set_review_field(document, item_id, "Reviewer", reviewer_id)
     document = _set_review_field(document, item_id, "Reviewer 状态", "reviewing")
     document = _set_review_field(document, item_id, "关闭状态", "open")
+    path.write_text(document, encoding="utf-8")
+    return validate_checklist(path)
+
+
+def replace_reviewer(
+    checklist_path: Union[str, Path],
+    item_id: str,
+    from_reviewer: str,
+    to_reviewer: str,
+    reason_text: str,
+) -> Dict[str, object]:
+    parsed = parse_file(checklist_path)
+    snapshot = build_snapshot(parsed)
+    _require_protocol_ready(parsed, snapshot)
+    item = _require_item(snapshot["items"], item_id)
+    if item.get("dispatch_status") != "in-review":
+        raise ValueError(f"{item_id} must be in-review before replace-reviewer")
+
+    current_reviewer = _field(item, "reviewer_id")
+    replacement_reviewer = _agent_name(to_reviewer)
+    if _agent_name(from_reviewer) != current_reviewer:
+        raise ValueError(f"{item_id} reviewer_id is {current_reviewer}; cannot replace from {from_reviewer}")
+    if not replacement_reviewer:
+        raise ValueError("replacement reviewer is required")
+    if replacement_reviewer == current_reviewer:
+        raise ValueError("replacement reviewer must differ from current reviewer")
+    _ensure_independent_reviewer(item, replacement_reviewer, "replacement reviewer")
+    if _is_blankish(reason_text):
+        raise ValueError("replacement reason is required")
+
+    reason = reason_text.strip()
+    replacement_note = f"{replacement_reviewer}（替换 {current_reviewer}；原因：{reason}）"
+
+    path = Path(checklist_path)
+    document = path.read_text(encoding="utf-8")
+    # reviewer replacement 是受控状态迁移：保持 item in-review，只替换独立审核人和审计记录。
+    document = _set_structured_field(document, item_id, "reviewer_id", replacement_reviewer)
+    document = _set_structured_field(document, item_id, "reviewer_state", "reviewing")
+    document = _set_structured_field(document, item_id, "next_action", "等待 replacement reviewer 返回审核结论")
+    document = _set_review_field(document, item_id, "Reviewer", replacement_reviewer)
+    document = _set_review_field(document, item_id, "Reviewer 状态", "reviewing")
+    document = _set_review_field(document, item_id, "原 Reviewer 状态", "replaced")
+    document = _set_review_field(document, item_id, "Replacement Reviewer", replacement_note)
+    document = _set_review_field(document, item_id, "关闭状态", "open")
+    document = _set_review_field(document, item_id, "关闭原因", f"原 reviewer {current_reviewer} 已替换：{reason}")
     path.write_text(document, encoding="utf-8")
     return validate_checklist(path)
 
@@ -693,6 +740,11 @@ def _build_protocol_violations(parsed: Any, snapshot: Dict[str, Any]) -> List[Co
             reviewer_state = _field(item, "reviewer_state")
             if reviewer_state not in {"reviewing", "slow", "suspect-stalled"}:
                 violations.append(_item_error(item, "invalid_in_review_reviewer_state", "in-review reviewer_state must be reviewing, slow, or suspect-stalled", "reviewer_state"))
+        if status in {"in-review", "changes-requested", "done"}:
+            reviewer_id = _field(item, "reviewer_id")
+            assigned_subagent = _field(item, "assigned_subagent")
+            if reviewer_id and assigned_subagent and reviewer_id == assigned_subagent:
+                violations.append(_item_error(item, "reviewer_same_as_assigned_subagent", "Reviewer must be independent from implementation agent", "reviewer_id"))
         if status == "changes-requested" and _is_blankish(item.get("review_record")):
             violations.append(_item_error(item, "changes_requested_without_review", "changes-requested item must record reviewer feedback", "审核记录"))
         if status == "done":
@@ -1230,6 +1282,13 @@ def _ensure_reviewer_slot_available(items: List[Dict[str, Any]], item: Dict[str,
         raise ValueError(f"reviewer concurrency limit {REVIEWER_LIMIT} is full")
 
 
+def _ensure_independent_reviewer(item: Dict[str, Any], reviewer_id: str, label: str = "reviewer") -> None:
+    reviewer = _agent_name(reviewer_id)
+    assigned_subagent = _agent_name(_field(item, "assigned_subagent"))
+    if reviewer and assigned_subagent and reviewer == assigned_subagent:
+        raise ValueError(f"{label} must not be the implementation agent")
+
+
 def _ensure_no_active_surface_conflict(items: List[Dict[str, Any]], item: Dict[str, Any]) -> None:
     surfaces = set(item.get("shared_surfaces") or [])
     if not surfaces:
@@ -1624,6 +1683,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     assign_parser.add_argument("--reviewer", required=True)
     assign_parser.add_argument("--json", action="store_true")
 
+    replace_parser = subparsers.add_parser("replace-reviewer", help="Replace a stalled in-review reviewer")
+    replace_parser.add_argument("--checklist", required=True)
+    replace_parser.add_argument("--item", required=True)
+    replace_parser.add_argument("--from-reviewer", required=True)
+    replace_parser.add_argument("--to-reviewer", required=True)
+    _add_text_args(replace_parser, "reason")
+    replace_parser.add_argument("--json", action="store_true")
+
     changes_parser = subparsers.add_parser("request-changes", help="Record reviewer changes")
     changes_parser.add_argument("--checklist", required=True)
     changes_parser.add_argument("--item", required=True)
@@ -1686,6 +1753,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             payload = queue_review(args.checklist, args.item)
         elif args.command == "assign-reviewer":
             payload = assign_reviewer(args.checklist, args.item, args.reviewer)
+        elif args.command == "replace-reviewer":
+            payload = replace_reviewer(
+                args.checklist,
+                args.item,
+                args.from_reviewer,
+                args.to_reviewer,
+                _read_text_arg(args.reason, args.reason_file),
+            )
         elif args.command == "request-changes":
             payload = request_changes(args.checklist, args.item, _read_text_arg(args.review, args.review_file))
         elif args.command == "approve":

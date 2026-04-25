@@ -58,6 +58,7 @@ python3 strict-review-development-mode/controller.py start --checklist <checklis
 python3 strict-review-development-mode/controller.py mark-implemented --checklist <checklist.md> --item item-1 --implementation-file <impl-file> --verification-file <verification-file>
 python3 strict-review-development-mode/controller.py queue-review --checklist <checklist.md> --item item-1
 python3 strict-review-development-mode/controller.py assign-reviewer --checklist <checklist.md> --item item-1 --reviewer <reviewer-id>
+python3 strict-review-development-mode/controller.py replace-reviewer --checklist <checklist.md> --item item-1 --from-reviewer <old-reviewer> --to-reviewer <new-reviewer> --reason-file <reason-file>
 python3 strict-review-development-mode/controller.py request-changes --checklist <checklist.md> --item item-1 --review-file <review-file>
 python3 strict-review-development-mode/controller.py approve --checklist <checklist.md> --item item-1 --review-file <approval-file>
 ```
@@ -106,6 +107,7 @@ stateDiagram-v2
   implemented --> review_queued: controller queue-review
   implemented --> in_review: controller assign-reviewer / reviewer 槽位可用
   review_queued --> in_review: controller assign-reviewer
+  in_review --> in_review: controller replace-reviewer / reviewer 超时
   in_review --> changes_requested: controller request-changes
   changes_requested --> active: controller start / rework
   changes_requested --> implemented: controller mark-implemented / 补验证

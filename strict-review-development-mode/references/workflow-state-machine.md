@@ -15,6 +15,7 @@ stateDiagram-v2
   implemented --> review_queued: controller queue-review
   implemented --> in_review: controller assign-reviewer / reviewer 槽位可用
   review_queued --> in_review: controller assign-reviewer
+  in_review --> in_review: controller replace-reviewer / reviewer 超时
 
   in_review --> changes_requested: controller request-changes
   changes_requested --> active: controller start / rework
@@ -49,4 +50,3 @@ flowchart TD
   H --> I[planning / implementation]
   I --> J[下一 cycle]
 ```
-

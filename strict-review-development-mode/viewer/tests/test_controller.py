@@ -479,6 +479,108 @@ class ControllerValidationTests(unittest.TestCase):
             self.assertIn("- reviewer_state：closed", document)
             self.assertIn("- [x] 1. Build controller", document)
 
+    def test_replace_reviewer_records_replacement_without_closing_review(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(
+                    1,
+                    "item-1",
+                    "One",
+                    status="in-review",
+                    assigned="claude",
+                    reviewer_id="gemini",
+                    reviewer_state="suspect-stalled",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    review="- Reviewer：gemini\n- Reviewer 状态：suspect-stalled\n- Replacement Reviewer：待填写\n- 关闭状态：open\n- 关闭原因：待填写",
+                ),
+                make_item(2, "item-2", "Two"),
+                make_item(3, "item-3", "Three"),
+                make_item(4, "item-4", "Four"),
+            )
+        )
+
+        payload = controller.replace_reviewer(path, "item-1", "gemini", "human:alice", "Gemini 超过 35min 未返回")
+
+        document = path.read_text(encoding="utf-8")
+        self.assertTrue(payload["ok"])
+        self.assertIn("- dispatch_status：in-review", document)
+        self.assertIn("- reviewer_id：human:alice", document)
+        self.assertIn("- reviewer_state：reviewing", document)
+        self.assertIn("- 原 Reviewer 状态：replaced", document)
+        self.assertIn("- Replacement Reviewer：human:alice（替换 gemini；原因：Gemini 超过 35min 未返回）", document)
+        self.assertIn("- 关闭状态：open", document)
+        self.assertIn("- 关闭原因：原 reviewer gemini 已替换：Gemini 超过 35min 未返回", document)
+
+    def test_replace_reviewer_rejects_implementation_agent_self_review(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(
+                    1,
+                    "item-1",
+                    "One",
+                    status="in-review",
+                    assigned="claude",
+                    reviewer_id="gemini",
+                    reviewer_state="reviewing",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                ),
+                make_item(2, "item-2", "Two"),
+                make_item(3, "item-3", "Three"),
+                make_item(4, "item-4", "Four"),
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "must not be the implementation agent"):
+            controller.replace_reviewer(path, "item-1", "gemini", "claude", "Gemini 超时")
+
+    def test_assign_reviewer_rejects_implementation_agent_self_review(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(
+                    1,
+                    "item-1",
+                    "One",
+                    status="implemented",
+                    assigned="claude",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                ),
+                make_item(2, "item-2", "Two"),
+                make_item(3, "item-3", "Three"),
+                make_item(4, "item-4", "Four"),
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "reviewer must not be the implementation agent"):
+            controller.assign_reviewer(path, "item-1", "claude")
+
+    def test_validate_rejects_existing_self_review_state(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(
+                    1,
+                    "item-1",
+                    "One",
+                    status="in-review",
+                    assigned="claude",
+                    reviewer_id="claude",
+                    reviewer_state="reviewing",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                ),
+                make_item(2, "item-2", "Two"),
+                make_item(3, "item-3", "Three"),
+                make_item(4, "item-4", "Four"),
+            )
+        )
+
+        payload = controller.validate_checklist(path)
+
+        self.assertFalse(payload["ok"])
+        self.assertIn("reviewer_same_as_assigned_subagent", violation_codes(payload))
+
     def test_cli_validate_returns_nonzero_for_protocol_errors(self) -> None:
         path = write_temp_checklist(
             build_checklist(
@@ -557,6 +659,49 @@ class ControllerValidationTests(unittest.TestCase):
         self.assertIn("- planning_agent：codex", document)
         self.assertIn("- implementation_agent：claude", document)
         self.assertIn("- review_agent：gemini", document)
+
+    def test_cli_replace_reviewer_accepts_reason_text(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(
+                    1,
+                    "item-1",
+                    "One",
+                    status="in-review",
+                    assigned="claude",
+                    reviewer_id="gemini",
+                    reviewer_state="slow",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                ),
+                make_item(2, "item-2", "Two"),
+                make_item(3, "item-3", "Three"),
+                make_item(4, "item-4", "Four"),
+            )
+        )
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            exit_code = controller.main(
+                [
+                    "replace-reviewer",
+                    "--checklist",
+                    str(path),
+                    "--item",
+                    "item-1",
+                    "--from-reviewer",
+                    "gemini",
+                    "--to-reviewer",
+                    "human:alice",
+                    "--reason",
+                    "Gemini 超过硬超时门槛",
+                    "--json",
+                ]
+            )
+
+        document = path.read_text(encoding="utf-8")
+        self.assertEqual(0, exit_code)
+        self.assertIn("- reviewer_id：human:alice", document)
+        self.assertIn("- Replacement Reviewer：human:alice（替换 gemini；原因：Gemini 超过硬超时门槛）", document)
 
     def test_cli_diagram_prints_mermaid_state_machine(self) -> None:
         stdout = io.StringIO()
