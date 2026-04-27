@@ -320,6 +320,29 @@ class ControllerValidationTests(unittest.TestCase):
         self.assertIn("plan", implementation_packet["input_artifacts"])
         self.assertIn("implementation_record", review_packet["input_artifacts"])
         self.assertIn("verification_record", review_packet["input_artifacts"])
+        self.assertTrue(planning_packet["output_artifacts"]["document_dir"].endswith("/.strict-review/测试-controller"))
+        self.assertEqual("测试-controller", planning_packet["output_artifacts"]["task_dir"])
+        self.assertTrue(planning_packet["output_artifacts"]["plan_file"].endswith("/.strict-review/测试-controller/item-1-plan.md"))
+        self.assertTrue(implementation_packet["output_artifacts"]["implementation_file"].endswith("/.strict-review/测试-controller/item-3-implementation.md"))
+        self.assertTrue(implementation_packet["output_artifacts"]["verification_file"].endswith("/.strict-review/测试-controller/item-3-verification.md"))
+        self.assertTrue(review_packet["output_artifacts"]["review_file"].endswith("/.strict-review/测试-controller/item-2-review.md"))
+        self.assertIn(".strict-review", implementation_packet["commands"]["mark_implemented"])
+        self.assertIn(".strict-review", review_packet["commands"]["approve"])
+
+    def test_validate_warns_when_checklist_is_not_in_dot_document_directory(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(1, "item-1", "One"),
+                make_item(2, "item-2", "Two"),
+                make_item(3, "item-3", "Three"),
+                make_item(4, "item-4", "Four"),
+            )
+        )
+
+        payload = controller.validate_checklist(path)
+
+        self.assertTrue(payload["ok"])
+        self.assertIn("checklist_outside_strict_review_task_directory", violation_codes(payload))
 
     def test_item_agent_override_wins_over_global_policy(self) -> None:
         routing = textwrap.dedent(
@@ -598,7 +621,7 @@ class ControllerValidationTests(unittest.TestCase):
 
     def test_cli_init_accepts_json_item_definitions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "checklist.md"
+            path = Path(temp_dir) / ".strict-review" / "cli-init" / "checklist.md"
             with contextlib.redirect_stdout(io.StringIO()):
                 exit_code = controller.main(
                     [
@@ -626,7 +649,10 @@ class ControllerValidationTests(unittest.TestCase):
 
             self.assertEqual(0, exit_code)
             self.assertIn("## 任务归属判定", path.read_text(encoding="utf-8"))
+            self.assertIn("## 文档位置", path.read_text(encoding="utf-8"))
+            self.assertIn(f"- 专属目录：{path.parent}", path.read_text(encoding="utf-8"))
             self.assertIn("- fallback_agent：current", path.read_text(encoding="utf-8"))
+            self.assertTrue(path.parent.is_dir())
 
     def test_cli_set_routing_accepts_user_agent_preferences(self) -> None:
         path = write_temp_checklist(

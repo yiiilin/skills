@@ -15,6 +15,7 @@
         "做出 same-task/different-task/uncertain 的任务归属判定",
         "将大任务拆成至少四个 item，并为每个 item 指定 item_id 和 title",
         "为每个 item 指定 blocked_by、blocks、shared_surfaces 和 parallel_group",
+        "将 checklist 和派工文档放入 .strict-review/<task-slug>/ 专属任务目录，且 task-slug 描述当前任务",
         "说明前端表单与后端 API 是否可并行，以及数据契约相关 shared_surfaces",
         "运行或明确要求运行 controller.py validate",
         "运行或明确要求运行 controller.py cycle",
@@ -132,7 +133,7 @@
       "category": "agile_ticket_context",
       "adversarial": false,
       "prompt": "强审模式下，把一个大任务拆给多个 agent。每个 agent 不要被全局信息淹没，只要知道任务目的、自己的目标、完成标准、非目标和交付物。",
-      "expected_output": "dispatch_packets 像敏捷 ticket：包含 workflow_goal、agent_objective、local_scope、success_criteria、non_goals、handoff_requirements、input_artifacts。",
+      "expected_output": "dispatch_packets 像敏捷 ticket：包含 workflow_goal、agent_objective、local_scope、success_criteria、non_goals、handoff_requirements、input_artifacts、output_artifacts 和 commands。",
       "files": [],
       "expectations": [
         "每个派发给 agent 的工作包包含大任务目的 workflow_goal",
@@ -141,7 +142,9 @@
         "每个工作包包含完成标准 success_criteria",
         "每个工作包包含非目标 non_goals，明确不要操心其他 item 或全局调度",
         "每个工作包包含交付要求 handoff_requirements",
-        "每个工作包只携带该角色需要的最小 input_artifacts"
+        "每个工作包只携带该角色需要的最小 input_artifacts",
+        "每个工作包包含 output_artifacts，且路径位于 .strict-review/<task-slug>/ 专属任务目录",
+        "每个工作包包含可用的 controller commands"
       ]
     },
     {

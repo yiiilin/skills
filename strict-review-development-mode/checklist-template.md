@@ -3,6 +3,13 @@
 ## 模式
 - 强审开发模式（controller-enforced DAG-first）
 
+## 文档位置
+- 专属目录：.strict-review/<task-slug>/
+- task_slug：<描述当前强审开发任务解决的问题>
+- checklist：.strict-review/<task-slug>/checklist.md
+- 派工文档命名：.strict-review/<task-slug>/<item_id>-<kind>.md
+- 约束：强审流程产生的计划、实施、验证、审核等文档只写入上述任务目录
+
 ## 审核设置
 - 审核模型目标：gpt-5.4
 - 推理强度目标：xhigh

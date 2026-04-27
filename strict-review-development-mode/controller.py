@@ -19,6 +19,9 @@ IMPLEMENTATION_LIMIT = 4
 REVIEWER_LIMIT = 2
 FINISHED_STATUS = "done"
 DEFAULT_AGENT = "current"
+STRICT_REVIEW_DOCUMENT_DIR = ".strict-review"
+DEFAULT_TASK_DIRECTORY = "current-task"
+DEFAULT_CHECKLIST_FILE = "checklist.md"
 # controller 只表达“由协调者决定调用方式”，不承载任何平台私有调用参数。
 INVOCATION_POLICY = "coordinator-decides"
 KNOWN_STATUSES = {
@@ -154,6 +157,8 @@ class DispatchPacket:
     non_goals: List[str]
     handoff_requirements: List[str]
     input_artifacts: Dict[str, object]
+    output_artifacts: Dict[str, str]
+    commands: Dict[str, str]
     command: str
     prompt: str
     shared_surfaces: List[str]
@@ -177,6 +182,8 @@ class DispatchPacket:
             "non_goals": self.non_goals,
             "handoff_requirements": self.handoff_requirements,
             "input_artifacts": self.input_artifacts,
+            "output_artifacts": self.output_artifacts,
+            "commands": self.commands,
             "command": self.command,
             "prompt": self.prompt,
             "shared_surfaces": self.shared_surfaces,
@@ -207,7 +214,12 @@ def validate_checklist(checklist_path: Union[str, Path]) -> Dict[str, object]:
     parsed = parse_file(checklist_path)
     snapshot = build_snapshot(parsed)
     items = list(snapshot["items"])
-    violations = _build_parser_violations(snapshot) + _build_protocol_violations(parsed, snapshot)
+    workflow_context = _workflow_context(parsed)
+    violations = (
+        _build_path_violations(checklist_path, workflow_context)
+        + _build_parser_violations(snapshot)
+        + _build_protocol_violations(parsed, snapshot)
+    )
     return {
         "ok": not any(violation.severity == "error" for violation in violations),
         "checklist": str(Path(checklist_path)),
@@ -221,11 +233,15 @@ def build_cycle_plan(checklist_path: Union[str, Path]) -> Dict[str, object]:
     parsed = parse_file(checklist_path)
     snapshot = build_snapshot(parsed)
     items = list(snapshot["items"])
-    violations = _build_parser_violations(snapshot) + _build_protocol_violations(parsed, snapshot)
-    has_errors = any(violation.severity == "error" for violation in violations)
     item_by_id = _item_by_id(items)
     agent_routing = _agent_routing_policy(parsed)
     workflow_context = _workflow_context(parsed)
+    violations = (
+        _build_path_violations(checklist_path, workflow_context)
+        + _build_parser_violations(snapshot)
+        + _build_protocol_violations(parsed, snapshot)
+    )
+    has_errors = any(violation.severity == "error" for violation in violations)
     status_updates = [] if has_errors else _recommended_status_updates(items, item_by_id)
     packets = [] if has_errors else _build_dispatch_packets(Path(checklist_path), items, item_by_id, agent_routing, workflow_context)
     active_items = [item["item_id"] for item in items if item.get("dispatch_status") == "active"]
@@ -512,12 +528,20 @@ def init_checklist(
     if len(item_ids) != len(set(item_ids)):
         raise ValueError("item_id values must be unique")
 
+    checklist_file = Path(checklist_path)
+    document_dir = _strict_review_document_dir(checklist_file, {"workflow_goal": request or title})
     item_by_id = {str(item["item_id"]): item for item in items}
     lines: List[str] = [
         f"# {title}",
         "",
         "## 模式",
         "- 强审开发模式（controller-enforced DAG-first）",
+        "",
+        "## 文档位置",
+        f"- 专属目录：{document_dir}",
+        f"- checklist：{checklist_file}",
+        f"- 派工文档命名：{document_dir}/<item_id>-<kind>.md",
+        "- 约束：强审流程产生的计划、实施、验证、审核等文档只写入上述点号目录",
         "",
         "## 审核设置",
         "- 审核模型目标：gpt-5.4",
@@ -623,8 +647,10 @@ def init_checklist(
                 "",
             ]
         )
-
-    Path(checklist_path).write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    # init 是创建新强审文档的入口，必须负责把点号专属目录建好。
+    checklist_file.parent.mkdir(parents=True, exist_ok=True)
+    document_dir.mkdir(parents=True, exist_ok=True)
+    checklist_file.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def _build_parser_violations(snapshot: Dict[str, Any]) -> List[ControllerViolation]:
@@ -656,6 +682,26 @@ def _build_parser_violations(snapshot: Dict[str, Any]) -> List[ControllerViolati
             )
         )
     return violations
+
+
+def _build_path_violations(
+    checklist_path: Union[str, Path],
+    workflow_context: Optional[Dict[str, str]] = None,
+) -> List[ControllerViolation]:
+    path = Path(checklist_path)
+    if _is_strict_review_task_path(path):
+        return []
+    return [
+        ControllerViolation(
+            severity="warning",
+            code="checklist_outside_strict_review_task_directory",
+            message=(
+                "Strict-review documents should live in a task-specific directory under "
+                f"{STRICT_REVIEW_DOCUMENT_DIR}/; recommended checklist path is "
+                f"{_strict_review_document_dir(path, workflow_context) / DEFAULT_CHECKLIST_FILE}"
+            ),
+        )
+    ]
 
 
 def _build_protocol_violations(parsed: Any, snapshot: Dict[str, Any]) -> List[ControllerViolation]:
@@ -955,10 +1001,12 @@ def _planning_packet(
 ) -> DispatchPacket:
     item_id = _item_id(item)
     title = str(item.get("title") or item.get("heading") or item_id)
-    command = f"python3 {CONTROLLER_PATH} plan --checklist {checklist_path} --item {item_id} --text-file <plan-file>"
+    output_artifacts = _packet_output_artifacts(checklist_path, item_id, packet_type, workflow_context)
+    plan_file = output_artifacts["plan_file"]
+    command = f"python3 {CONTROLLER_PATH} plan --checklist {checklist_path} --item {item_id} --text-file {plan_file}"
     prompt = (
         f"为 {item_id} - {title} 写计划。计划必须写清改动范围、文件 ownership、DAG 依赖、"
-        "shared_surfaces、并行性、验证方式和风险边界；写好后用 controller plan 写回。"
+        f"shared_surfaces、并行性、验证方式和风险边界；计划文档写到 {plan_file}，写好后用 controller plan 写回。"
     )
     route = _resolve_agent_route(packet_type, item, agent_routing)
     contract = _planning_contract(item, packet_type, workflow_context)
@@ -978,6 +1026,8 @@ def _planning_packet(
         non_goals=contract["non_goals"],
         handoff_requirements=contract["handoff_requirements"],
         input_artifacts=contract["input_artifacts"],
+        output_artifacts=output_artifacts,
+        commands={"write_plan": command},
         command=command,
         prompt=prompt,
         shared_surfaces=list(item.get("shared_surfaces") or []),
@@ -995,10 +1045,17 @@ def _implementation_packet(
 ) -> DispatchPacket:
     item_id = _item_id(item)
     title = str(item.get("title") or item.get("heading") or item_id)
+    output_artifacts = _packet_output_artifacts(checklist_path, item_id, packet_type, workflow_context)
+    implementation_file = output_artifacts["implementation_file"]
+    verification_file = output_artifacts["verification_file"]
     command = f"python3 {CONTROLLER_PATH} start --checklist {checklist_path} --item {item_id} --agent <agent-id>"
+    mark_command = (
+        f"python3 {CONTROLLER_PATH} mark-implemented --checklist {checklist_path} --item {item_id} "
+        f"--implementation-file {implementation_file} --verification-file {verification_file}"
+    )
     prompt = (
         f"实施 {item_id} - {title}。只处理该事项计划内内容；完成后用 controller mark-implemented "
-        "写入实施记录和验证记录。"
+        f"写入实施记录和验证记录，文档分别放到 {implementation_file} 和 {verification_file}。"
     )
     route = _resolve_agent_route(packet_type, item, agent_routing)
     contract = _implementation_contract(item, packet_type, workflow_context)
@@ -1018,6 +1075,8 @@ def _implementation_packet(
         non_goals=contract["non_goals"],
         handoff_requirements=contract["handoff_requirements"],
         input_artifacts=contract["input_artifacts"],
+        output_artifacts=output_artifacts,
+        commands={"start": command, "mark_implemented": mark_command},
         command=command,
         prompt=prompt,
         shared_surfaces=list(item.get("shared_surfaces") or []),
@@ -1034,10 +1093,17 @@ def _review_packet(
 ) -> DispatchPacket:
     item_id = _item_id(item)
     title = str(item.get("title") or item.get("heading") or item_id)
+    output_artifacts = _packet_output_artifacts(checklist_path, item_id, "review", workflow_context)
+    review_file = output_artifacts["review_file"]
     command = f"python3 {CONTROLLER_PATH} assign-reviewer --checklist {checklist_path} --item {item_id} --reviewer <reviewer-id>"
+    request_changes_command = (
+        f"python3 {CONTROLLER_PATH} request-changes --checklist {checklist_path} --item {item_id} "
+        f"--review-file {review_file}"
+    )
+    approve_command = f"python3 {CONTROLLER_PATH} approve --checklist {checklist_path} --item {item_id} --review-file {review_file}"
     prompt = (
         f"审核 {item_id} - {title}。检查是否符合计划、DAG、shared_surfaces 和验证记录；"
-        "若有问题用 request-changes，若通过用 approve。"
+        f"审核文档写到 {review_file}，若有问题用 request-changes，若通过用 approve。"
     )
     route = _resolve_agent_route("review", item, agent_routing)
     contract = _review_contract(item, workflow_context)
@@ -1057,6 +1123,12 @@ def _review_packet(
         non_goals=contract["non_goals"],
         handoff_requirements=contract["handoff_requirements"],
         input_artifacts=contract["input_artifacts"],
+        output_artifacts=output_artifacts,
+        commands={
+            "assign_reviewer": command,
+            "request_changes": request_changes_command,
+            "approve": approve_command,
+        },
         command=command,
         prompt=prompt,
         shared_surfaces=list(item.get("shared_surfaces") or []),
@@ -1082,7 +1154,7 @@ def _planning_contract(item: Dict[str, Any], packet_type: str, workflow_context:
             "不要重排无关 item 的 DAG",
         ],
         [
-            "输出计划正文",
+            "将计划正文写入 packet.output_artifacts.plan_file",
             "使用 packet.command 对应的 controller plan 命令写回",
         ],
         _input_artifacts(item, workflow_context, include_plan=False, include_review=packet_type == "replan"),
@@ -1110,7 +1182,9 @@ def _implementation_contract(item: Dict[str, Any], packet_type: str, workflow_co
         ],
         [
             "先使用 packet.command 对应的 controller start 命令领取本 item",
-            "完成后使用 controller mark-implemented 写回实施记录和验证记录",
+            "将实施记录写入 packet.output_artifacts.implementation_file",
+            "将验证记录写入 packet.output_artifacts.verification_file",
+            "完成后使用 packet.commands.mark_implemented 写回实施记录和验证记录",
         ],
         _input_artifacts(item, workflow_context, include_plan=True, include_review=packet_type == "rework"),
     )
@@ -1136,8 +1210,9 @@ def _review_contract(item: Dict[str, Any], workflow_context: Dict[str, str]) -> 
         ],
         [
             "先使用 packet.command 对应的 controller assign-reviewer 命令领取审核",
-            "不通过时用 controller request-changes 写回审核意见",
-            "通过时用 controller approve 写回通过结论",
+            "将审核意见或通过结论写入 packet.output_artifacts.review_file",
+            "不通过时用 packet.commands.request_changes 写回审核意见",
+            "通过时用 packet.commands.approve 写回通过结论",
         ],
         _input_artifacts(
             item,
@@ -1162,6 +1237,7 @@ def _packet_contract(
     non_goals = [
         "不要操心全局调度、其他 agent 分工或未分配给本 item 的事项",
         "不要手改 dispatch_status、assigned_subagent、reviewer_id、reviewer_state 或 checklist 勾选状态",
+        "不要把强审流程文档写到项目根目录；只使用 packet.output_artifacts 指向的点号专属目录",
     ]
     non_goals.extend(role_non_goals)
     return {
@@ -1420,6 +1496,59 @@ def _read_text_arg(text: Optional[str], text_file: Optional[str]) -> str:
     if text_file:
         return Path(text_file).read_text(encoding="utf-8")
     return text or ""
+
+
+def _is_strict_review_task_path(checklist_path: Union[str, Path]) -> bool:
+    path = Path(checklist_path)
+    return path.name == DEFAULT_CHECKLIST_FILE and path.parent.parent.name == STRICT_REVIEW_DOCUMENT_DIR
+
+
+def _strict_review_document_dir(
+    checklist_path: Union[str, Path],
+    workflow_context: Optional[Dict[str, str]] = None,
+) -> Path:
+    path = Path(checklist_path)
+    if _is_strict_review_task_path(path):
+        return path.parent
+    root_dir = path.parent if path.parent.name == STRICT_REVIEW_DOCUMENT_DIR else path.parent / STRICT_REVIEW_DOCUMENT_DIR
+    return root_dir / _task_directory_slug(workflow_context)
+
+
+def _task_directory_slug(workflow_context: Optional[Dict[str, str]]) -> str:
+    raw_text = ""
+    if workflow_context:
+        raw_text = workflow_context.get("workflow_goal") or workflow_context.get("current_request") or ""
+    return _filesystem_slug(raw_text, fallback=DEFAULT_TASK_DIRECTORY)
+
+
+def _artifact_slug(item_id: str) -> str:
+    # 文件名只保留稳定安全字符，避免 agent 生成的 item_id 把文档写出专属目录。
+    return _filesystem_slug(item_id, fallback="item")
+
+
+def _filesystem_slug(value: str, fallback: str) -> str:
+    # 任务目录需要描述当前工作方向；保留中文、字母、数字、下划线、点和短横线。
+    slug = re.sub(r"[^\w.-]+", "-", str(value).strip(), flags=re.UNICODE).strip(".-_")
+    return (slug[:80].strip(".-_") or fallback)
+
+
+def _packet_output_artifacts(
+    checklist_path: Union[str, Path],
+    item_id: str,
+    packet_type: str,
+    workflow_context: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    document_dir = _strict_review_document_dir(checklist_path, workflow_context)
+    slug = _artifact_slug(item_id)
+    artifacts = {"document_dir": str(document_dir), "task_dir": str(document_dir.name)}
+    if packet_type in {"planning", "replan"}:
+        artifacts["plan_file"] = str(document_dir / f"{slug}-plan.md")
+    if packet_type in {"implementation", "rework"}:
+        artifacts["implementation_file"] = str(document_dir / f"{slug}-implementation.md")
+        artifacts["verification_file"] = str(document_dir / f"{slug}-verification.md")
+    if packet_type == "review":
+        artifacts["review_file"] = str(document_dir / f"{slug}-review.md")
+    return artifacts
 
 
 def _split_h2_ranges(lines: List[str]) -> List[Tuple[str, int, int]]:

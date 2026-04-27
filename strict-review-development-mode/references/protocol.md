@@ -10,6 +10,20 @@
 - 关键字段只能通过 `controller.py` 修改：`dispatch_status`、`assigned_subagent`、`reviewer_id`、`reviewer_state`、勾选状态。
 - controller 返回 error 时，不得继续状态迁移。
 - 用户只和 coordinator 沟通。其他 agent 的选择由 checklist 路由策略和 coordinator 决策共同决定。
+- 强审流程产生的文档必须收敛到当前任务的 `.strict-review/<task-slug>/` 专属任务目录。
+
+## 文档目录
+
+默认路径。`task-slug` 由 coordinator 根据任务目标取一个稳定、可读、简短的目录名，必须描述当前强审开发任务解决的问题：
+
+- `.strict-review/<task-slug>/checklist.md`
+- `.strict-review/<task-slug>/<item_id>-plan.md`
+- `.strict-review/<task-slug>/<item_id>-implementation.md`
+- `.strict-review/<task-slug>/<item_id>-verification.md`
+- `.strict-review/<task-slug>/<item_id>-review.md`
+- `.strict-review/<task-slug>/<item_id>-reviewer-replacement.md`
+
+coordinator 和各角色 agent 不应在项目根目录生成 `strict-review-*.md`、`.strict-review-item-*.md` 或 `strict-review-artifacts/`，也不应把多轮任务日志直接平铺到 `.strict-review/` 根目录。历史 checklist 可以继续读取旧路径，但新产生的计划、实施、验证、审核和 reviewer replacement 原因必须写入 `.strict-review/<task-slug>/`。
 
 ## 任务归属判定
 
@@ -24,6 +38,7 @@
 ## Checklist 必备结构
 
 - 总 checklist
+- `文档位置`
 - `任务归属判定`
 - `任务重整摘要`
 - item-level DAG 说明
@@ -76,8 +91,8 @@ agent 名称是不透明字符串，controller 不校验具体平台，也不生
 coordinator 不需要在每次启动时主动询问 agent 选择。当用户主动表达 agent 偏好，或请求本身已经包含 agent 偏好时，coordinator 必须把偏好写入 checklist：
 
 ```bash
-python3 strict-review-development-mode/controller.py set-routing --checklist <checklist.md> --planning-agent codex --implementation-agent claude --review-agent gemini --json
-python3 strict-review-development-mode/controller.py set-routing --checklist <checklist.md> --item item-2 --implementation-agent gemini --json
+python3 strict-review-development-mode/controller.py set-routing --checklist .strict-review/<task-slug>/checklist.md --planning-agent codex --implementation-agent claude --review-agent gemini --json
+python3 strict-review-development-mode/controller.py set-routing --checklist .strict-review/<task-slug>/checklist.md --item item-2 --implementation-agent gemini --json
 ```
 
 全局 `set-routing` 可写入 `coordinator_agent`、`default_agent`、`fallback_agent`、`planning_agent`、`implementation_agent`、`rework_agent`、`review_agent`。带 `--item` 时只允许写入 `planning_agent`、`implementation_agent`、`rework_agent`、`review_agent`，避免把全局偏好误绑定到单个事项。
@@ -98,7 +113,7 @@ python3 strict-review-development-mode/controller.py set-routing --checklist <ch
 每个 cycle 必须运行：
 
 ```bash
-python3 strict-review-development-mode/controller.py cycle --checklist <checklist.md> --json
+python3 strict-review-development-mode/controller.py cycle --checklist .strict-review/<task-slug>/checklist.md --json
 ```
 
 调度优先级固定：
@@ -128,8 +143,10 @@ packet 还必须包含本 item 的敏捷 ticket 合同：
 - `non_goals`：不需要处理的事项，包括其他 item 和全局调度
 - `handoff_requirements`：完成后要交付或写回的内容
 - `input_artifacts`：本角色需要看的最小上下文
+- `output_artifacts`：本角色要写入的 `.strict-review/<task-slug>/` 专属任务目录文档路径
+- `commands`：领取、写回、审核通过或要求修改时可用的 controller 命令
 
-coordinator 派发工作时，应把这些字段连同 `prompt` 一起给目标 agent。目标 agent 像领取敏捷 ticket 一样执行：理解大任务目的，但只完成自己的局部目标。
+coordinator 派发工作时，应把这些字段连同 `prompt` 一起给目标 agent。目标 agent 像领取敏捷 ticket 一样执行：理解大任务目的，但只完成自己的局部目标，并且只把强审流程文档写入 `output_artifacts` 指向的 `.strict-review/<task-slug>/` 路径。
 
 ## shared_surfaces 冲突
 
@@ -168,7 +185,7 @@ coordinator 派发工作时，应把这些字段连同 `prompt` 一起给目标 
 替换 reviewer：
 
 ```bash
-python3 strict-review-development-mode/controller.py replace-reviewer --checklist <checklist.md> --item item-1 --from-reviewer <old-reviewer> --to-reviewer <new-reviewer> --reason-file <reason-file>
+python3 strict-review-development-mode/controller.py replace-reviewer --checklist .strict-review/<task-slug>/checklist.md --item item-1 --from-reviewer <old-reviewer> --to-reviewer <new-reviewer> --reason-file .strict-review/<task-slug>/item-1-reviewer-replacement.md
 ```
 
 推荐 reviewer_state：

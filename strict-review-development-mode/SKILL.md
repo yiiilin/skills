@@ -17,6 +17,20 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 6. 有 `dispatch_packets` 时必须消费 packet；能并行就并行派发，不能并行就按 packet 顺序本地执行。
 7. 结束前必须再次运行 `cycle`；只有所有 item 都是 `done` 才能宣布完成。
 8. 用户只需要和 coordinator 沟通；planner、developer、reviewer 可以是任意 agent，由 coordinator 根据 packet 路由和当前环境决定如何调用。
+9. 强审流程产生的文档必须放入 `.strict-review/<task-slug>/` 专属任务目录；`task-slug` 要描述当前强审开发任务解决的问题，不要在项目根目录散落 `strict-review-*.md`、`.strict-review-item-*.md` 或 `strict-review-artifacts/`。
+
+## 文档目录
+
+默认使用 `.strict-review/<task-slug>/`。`task-slug` 由 coordinator 根据任务目标取一个稳定、可读、简短的目录名，例如 `dry-run-cli`、`inventory-bulk-reservation`、`强审文档目录规范`。
+
+- `.strict-review/<task-slug>/checklist.md`：唯一 source of truth。
+- `.strict-review/<task-slug>/<item_id>-plan.md`：计划文档。
+- `.strict-review/<task-slug>/<item_id>-implementation.md`：实施记录。
+- `.strict-review/<task-slug>/<item_id>-verification.md`：验证记录。
+- `.strict-review/<task-slug>/<item_id>-review.md`：审核记录或通过结论。
+- `.strict-review/<task-slug>/<item_id>-reviewer-replacement.md`：reviewer 替换原因。
+
+如果正在续做历史 checklist，可以读取旧路径；但新产生的强审文档一律写入 `.strict-review/<task-slug>/`。如果 controller 对 checklist 路径给出 warning，先迁移或新建合规任务目录。
 
 ## 入口流程
 
@@ -27,19 +41,19 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 5. 创建或补齐 checklist 后运行：
 
 ```bash
-python3 strict-review-development-mode/controller.py validate --checklist <checklist.md> --json
+python3 strict-review-development-mode/controller.py validate --checklist .strict-review/<task-slug>/checklist.md --json
 ```
 
 6. 每个执行循环都运行：
 
 ```bash
-python3 strict-review-development-mode/controller.py cycle --checklist <checklist.md> --json
+python3 strict-review-development-mode/controller.py cycle --checklist .strict-review/<task-slug>/checklist.md --json
 ```
 
 7. 如果 `cycle` 输出 `status_updates`，运行：
 
 ```bash
-python3 strict-review-development-mode/controller.py cycle --checklist <checklist.md> --write --json
+python3 strict-review-development-mode/controller.py cycle --checklist .strict-review/<task-slug>/checklist.md --write --json
 ```
 
 8. 如果 `cycle` 输出 `dispatch_packets`，coordinator 根据 `target_agent`、`role`、`prompt` 派发工作包，并自行决定调用方式和参数。
@@ -47,20 +61,20 @@ python3 strict-review-development-mode/controller.py cycle --checklist <checklis
 ## 常用命令
 
 ```bash
-python3 strict-review-development-mode/controller.py init --checklist <checklist.md> --title "<任务标题>" --request "<用户请求>" --items-json '<json-array>'
-python3 strict-review-development-mode/controller.py set-routing --checklist <checklist.md> --planning-agent codex --implementation-agent claude --review-agent gemini --json
-python3 strict-review-development-mode/controller.py set-routing --checklist <checklist.md> --item item-2 --implementation-agent gemini --json
-python3 strict-review-development-mode/controller.py validate --checklist <checklist.md> --json
-python3 strict-review-development-mode/controller.py cycle --checklist <checklist.md> --json
+python3 strict-review-development-mode/controller.py init --checklist .strict-review/<task-slug>/checklist.md --title "<任务标题>" --request "<用户请求>" --items-json '<json-array>'
+python3 strict-review-development-mode/controller.py set-routing --checklist .strict-review/<task-slug>/checklist.md --planning-agent codex --implementation-agent claude --review-agent gemini --json
+python3 strict-review-development-mode/controller.py set-routing --checklist .strict-review/<task-slug>/checklist.md --item item-2 --implementation-agent gemini --json
+python3 strict-review-development-mode/controller.py validate --checklist .strict-review/<task-slug>/checklist.md --json
+python3 strict-review-development-mode/controller.py cycle --checklist .strict-review/<task-slug>/checklist.md --json
 python3 strict-review-development-mode/controller.py diagram
-python3 strict-review-development-mode/controller.py plan --checklist <checklist.md> --item item-1 --text-file <plan-file>
-python3 strict-review-development-mode/controller.py start --checklist <checklist.md> --item item-1 --agent <agent-id>
-python3 strict-review-development-mode/controller.py mark-implemented --checklist <checklist.md> --item item-1 --implementation-file <impl-file> --verification-file <verification-file>
-python3 strict-review-development-mode/controller.py queue-review --checklist <checklist.md> --item item-1
-python3 strict-review-development-mode/controller.py assign-reviewer --checklist <checklist.md> --item item-1 --reviewer <reviewer-id>
-python3 strict-review-development-mode/controller.py replace-reviewer --checklist <checklist.md> --item item-1 --from-reviewer <old-reviewer> --to-reviewer <new-reviewer> --reason-file <reason-file>
-python3 strict-review-development-mode/controller.py request-changes --checklist <checklist.md> --item item-1 --review-file <review-file>
-python3 strict-review-development-mode/controller.py approve --checklist <checklist.md> --item item-1 --review-file <approval-file>
+python3 strict-review-development-mode/controller.py plan --checklist .strict-review/<task-slug>/checklist.md --item item-1 --text-file .strict-review/<task-slug>/item-1-plan.md
+python3 strict-review-development-mode/controller.py start --checklist .strict-review/<task-slug>/checklist.md --item item-1 --agent <agent-id>
+python3 strict-review-development-mode/controller.py mark-implemented --checklist .strict-review/<task-slug>/checklist.md --item item-1 --implementation-file .strict-review/<task-slug>/item-1-implementation.md --verification-file .strict-review/<task-slug>/item-1-verification.md
+python3 strict-review-development-mode/controller.py queue-review --checklist .strict-review/<task-slug>/checklist.md --item item-1
+python3 strict-review-development-mode/controller.py assign-reviewer --checklist .strict-review/<task-slug>/checklist.md --item item-1 --reviewer <reviewer-id>
+python3 strict-review-development-mode/controller.py replace-reviewer --checklist .strict-review/<task-slug>/checklist.md --item item-1 --from-reviewer <old-reviewer> --to-reviewer <new-reviewer> --reason-file .strict-review/<task-slug>/item-1-reviewer-replacement.md
+python3 strict-review-development-mode/controller.py request-changes --checklist .strict-review/<task-slug>/checklist.md --item item-1 --review-file .strict-review/<task-slug>/item-1-review.md
+python3 strict-review-development-mode/controller.py approve --checklist .strict-review/<task-slug>/checklist.md --item item-1 --review-file .strict-review/<task-slug>/item-1-review.md
 ```
 
 `items-json` 是工作包数组，每项至少包含 `item_id` 和 `title`，可包含 `blocked_by`、`shared_surfaces`、`parallel_group`。
@@ -129,10 +143,12 @@ packet 是 C 方案的通用接口。controller 不直接调用任何平台私�
 - `non_goals`：明确不用操心的事项，尤其是其他 item 和全局调度
 - `handoff_requirements`：完成后要交付或写回的内容
 - `input_artifacts`：本角色需要看的最小上下文，例如计划、实施记录、验证记录或审核意见
+- `output_artifacts`：本角色要写入的 `.strict-review/<task-slug>/` 专属任务目录文档路径
+- `commands`：领取、写回、审核通过或要求修改时可用的 controller 命令
 - `prompt`：工作包说明
 - `command`：结果写回 controller 时的建议命令
 
-coordinator 派发 packet 时，应把这些字段作为敏捷 ticket 一起交给目标 agent。目标 agent 只对 `agent_objective` 和 `success_criteria` 负责，不需要处理 `non_goals` 中列出的事项。
+coordinator 派发 packet 时，应把这些字段作为敏捷 ticket 一起交给目标 agent。目标 agent 只对 `agent_objective` 和 `success_criteria` 负责，不需要处理 `non_goals` 中列出的事项；目标 agent 产生的计划、实施、验证、审核文档必须写入 `output_artifacts` 指向的 `.strict-review/<task-slug>/` 路径。
 
 ## 何时读取参考文档
 
@@ -145,7 +161,7 @@ coordinator 派发 packet 时，应把这些字段作为敏捷 ticket 一起交�
 结束前必须运行：
 
 ```bash
-python3 strict-review-development-mode/controller.py cycle --checklist <checklist.md> --json
+python3 strict-review-development-mode/controller.py cycle --checklist .strict-review/<task-slug>/checklist.md --json
 ```
 
 如果仍有 error、`status_updates`、`dispatch_packets`、未完成 item、活跃 reviewer 或待处理 reviewer assignment，就继续推进或报告明确 blocker；不要宣布完成。
