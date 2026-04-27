@@ -79,6 +79,16 @@ python3 strict-review-development-mode/controller.py approve --checklist .strict
 
 `items-json` 是工作包数组，每项至少包含 `item_id` 和 `title`，可包含 `blocked_by`、`shared_surfaces`、`parallel_group`。
 
+## 意外错误收集
+
+如果用户在真实使用中遇到意料之外的 controller 报错、错误派工、agent 跑偏、viewer 展示异常或强审规则被绕过，先不要让使用者手工整理零散截图。引导使用者生成本地报告包：
+
+```bash
+python3 strict-review-development-mode/scripts/collect_unexpected_error.py --checklist .strict-review/<task-slug>/checklist.md --category unexpected-dispatch --message "<简短错误描述>" --zip
+```
+
+报告包默认写入 `strict-review-development-mode-error-reports/`，只在本地生成，不会自动上传；默认会脱敏 checklist、controller 输出和可选文本附件中的常见密钥。完整收集和 triage 流程见 `references/unexpected-error-collection.md`。
+
 ## Agent 路由策略
 
 用户可以主动告诉 coordinator 偏好，例如“规划用 Codex，开发用 Claude，审核用 Gemini”或“item-2 让 Gemini 开发”。coordinator 不需要在每次启动时主动询问 agent 选择；只有当用户主动提出或请求中已经包含 agent 偏好时，才把这些偏好转换为 `set-routing` 命令写入 checklist，然后再运行 `cycle`。

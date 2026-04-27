@@ -34,6 +34,12 @@
 
 这个可选本地 progress viewer 只在任务执行期间使用，并会在 30 分钟内没有 page requests（no page requests）时自动退出。
 
+收集真实使用中的意外错误报告：
+
+```bash
+python3 strict-review-development-mode/scripts/collect_unexpected_error.py --checklist .strict-review/<task-slug>/checklist.md --category unexpected-dispatch --message "<简短错误描述>" --zip
+```
+
 `controller.py` 是通用 CLI，不绑定具体 agent 平台。它提供 B 方案能力（validator + state machine CLI），并通过 `dispatch_packets` 预留 C 方案能力（外部 orchestrator 可以消费 packet 后派发 subagent/reviewer，再用 controller 命令写回结果）。
 
 `dispatch_packets` 只表达路由意图，不写死外部调用参数。用户只需要和 coordinator 沟通；coordinator 可按 `target_agent` 把 planning、implementation、rework、review 分别交给 Codex、Claude、Gemini、人工 reviewer 或其他 agent，并自行决定模型、参数和上下文传递方式。
@@ -50,6 +56,8 @@ coordinator 不需要在每次启动时主动询问 agent 选择；如果用户�
 - `strict-review-development-mode/evals/`（C 方案强审评估用例：普通场景、对抗场景、多 agent 路由场景）
 - `strict-review-development-mode/references/protocol.md`（完整协议参考）
 - `strict-review-development-mode/references/workflow-state-machine.md`（工作流状态转换图）
+- `strict-review-development-mode/references/unexpected-error-collection.md`（真实使用中的意外错误收集与 regression eval 转化流程）
+- `strict-review-development-mode/scripts/collect_unexpected_error.py`（本地生成脱敏排错报告包）
 - `strict-review-development-mode/viewer/`（可选本地只读 progress viewer，用于查看 DAG / queue / item 详情，不作为调度真相）
 
 查看状态转换图：
