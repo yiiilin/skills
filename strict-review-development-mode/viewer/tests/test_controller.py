@@ -113,8 +113,40 @@ def build_checklist(*item_blocks: str, routing: str = "") -> str:
             - 判定依据：测试用新 checklist
             - 关联旧 checklist：none
 
+            ## 完成契约
+            - 用户原始请求范围：测试 controller
+            - 本 checklist 覆盖范围：全部测试事项
+            - 自划阶段是否可作为停止条件：否
+            - 允许中途停止条件：用户明确要求暂停 / blocker / needs-clarification
+            - 请求内未纳入事项：无
+            - 后续建议边界：只能写请求外增强项，不能把用户原始要求内的事项放到后续建议
+
+            ## 任务启动总规划
+            - 任务目标：测试 controller
+            - 非目标：无
+            - 验收标准：测试通过
+            - 已知约束：遵守强审状态机
+            - 代码侦察证据：测试构造 fixture
+            - 初步方案：按测试 checklist 推进
+            - 工作包拆分理由：测试覆盖多个状态
+            - 并行策略：由 DAG 和 shared_surfaces 决定
+            - 主要风险：无
+            - 需要用户确认的问题：无
+            - 启动判定：ready
+
             ## 当前执行状态
             - 当前状态：进行中
+
+            ## 交付总结
+            - 完成状态：pending
+            - 用户请求内交付内容：待填写
+            - 用户请求内未交付内容：待完成
+            - 请求外后续建议：无
+            - 关键变更位置：待填写
+            - 最终验证证据：待填写
+            - 审核结果摘要：待填写
+            - 遗留风险：待填写
+            - 用户验收入口：待填写
 
             ## Checklist
             - [ ] 1. One
@@ -149,6 +181,23 @@ def violation_codes(payload: Dict[str, object]) -> Set[str]:
     return {str(violation["code"]) for violation in payload["violations"]}  # type: ignore[index]
 
 
+def mark_startup_ready(path: Path) -> None:
+    document = path.read_text(encoding="utf-8")
+    replacements = {
+        "- 请求内未纳入事项：待确认": "- 请求内未纳入事项：无",
+        "- 非目标：待填写": "- 非目标：无",
+        "- 验收标准：待填写": "- 验收标准：测试通过",
+        "- 已知约束：待填写": "- 已知约束：遵守强审状态机",
+        "- 代码侦察证据：待填写": "- 代码侦察证据：测试构造 fixture",
+        "- 初步方案：待填写": "- 初步方案：按测试 checklist 推进",
+        "- 主要风险：待填写": "- 主要风险：无",
+        "- 启动判定：needs-clarification": "- 启动判定：ready",
+    }
+    for old, new in replacements.items():
+        document = document.replace(old, new)
+    path.write_text(document, encoding="utf-8")
+
+
 class ControllerValidationTests(unittest.TestCase):
     def test_validate_reports_lifecycle_dependency_and_surface_errors(self) -> None:
         path = write_temp_checklist(
@@ -181,6 +230,219 @@ class ControllerValidationTests(unittest.TestCase):
         self.assertIn("missing_verification_record", codes)
         self.assertIn("done_without_closed_reviewer", codes)
         self.assertIn("done_without_approval", codes)
+
+    def test_startup_needs_clarification_blocks_implementation_dispatch(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(1, "item-1", "One", status="ready", plan="- 计划：已补齐"),
+                make_item(2, "item-2", "Two", status="ready", plan="- 待填写"),
+                make_item(3, "item-3", "Three"),
+                make_item(4, "item-4", "Four"),
+            ).replace("- 启动判定：ready", "- 启动判定：needs-clarification")
+        )
+
+        payload = controller.build_cycle_plan(path)
+
+        packets = payload["dispatch_packets"]
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["implementation_allowed"])
+        self.assertIn("startup_needs_clarification_blocks_dispatch", violation_codes(payload))
+        self.assertNotIn("implementation", [packet["packet_type"] for packet in packets])
+        self.assertIn("planning", [packet["packet_type"] for packet in packets])
+
+        with self.assertRaisesRegex(ValueError, "启动判定不是 ready"):
+            controller.start_item(path, "item-1", "agent-1")
+
+    def test_init_defaults_to_needs_clarification_until_startup_plan_is_completed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / ".strict-review" / "startup-gate" / "checklist.md"
+            controller.init_checklist(
+                path,
+                "Startup Gate",
+                "完成完整需求",
+                [
+                    {
+                        "item_id": "item-1",
+                        "title": "First item",
+                        "blocked_by": [],
+                        "shared_surfaces": [],
+                        "parallel_group": "wave-1",
+                    }
+                ],
+            )
+
+            payload = controller.build_cycle_plan(path)
+            document = path.read_text(encoding="utf-8")
+
+            self.assertTrue(payload["ok"])
+            self.assertFalse(payload["implementation_allowed"])
+            self.assertIn("- 请求内未纳入事项：待确认", document)
+            self.assertIn("- 启动判定：needs-clarification", document)
+            self.assertEqual(["planning"], [packet["packet_type"] for packet in payload["dispatch_packets"]])
+
+    def test_startup_ready_requires_key_startup_plan_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / ".strict-review" / "startup-ready-fields" / "checklist.md"
+            controller.init_checklist(
+                path,
+                "Startup Ready Fields",
+                "完成完整需求",
+                [
+                    {
+                        "item_id": "item-1",
+                        "title": "First item",
+                        "blocked_by": [],
+                        "shared_surfaces": [],
+                        "parallel_group": "wave-1",
+                    }
+                ],
+            )
+            document = path.read_text(encoding="utf-8")
+            document = document.replace("- 请求内未纳入事项：待确认", "- 请求内未纳入事项：无")
+            document = document.replace("- 启动判定：needs-clarification", "- 启动判定：ready")
+            path.write_text(document, encoding="utf-8")
+
+            payload = controller.validate_checklist(path)
+
+            self.assertFalse(payload["ok"])
+            self.assertIn("startup_ready_with_incomplete_startup_plan", violation_codes(payload))
+
+    def test_cycle_emits_parallel_planning_packets_even_when_shared_surfaces_overlap(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(1, "item-1", "One", surfaces="[shared-file]", status="ready", plan="- 待填写"),
+                make_item(2, "item-2", "Two", surfaces="[shared-file]", status="ready", plan="- 待填写"),
+                make_item(3, "item-3", "Three", status="ready"),
+                make_item(4, "item-4", "Four", status="ready"),
+            )
+        )
+
+        payload = controller.build_cycle_plan(path)
+
+        packets = payload["dispatch_packets"]
+        packet_by_item = {packet["item_id"]: packet for packet in packets}
+        self.assertEqual("planning", packet_by_item["item-1"]["packet_type"])
+        self.assertEqual("planning", packet_by_item["item-2"]["packet_type"])
+
+    def test_delivery_summary_complete_cannot_hide_unfinished_request_scope(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(
+                    1,
+                    "item-1",
+                    "One",
+                    status="done",
+                    assigned="agent-1",
+                    reviewer_id="reviewer-1",
+                    reviewer_state="closed",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    review="- 审核结论：通过\n- 关闭状态：closed",
+                ),
+                make_item(
+                    2,
+                    "item-2",
+                    "Two",
+                    status="done",
+                    assigned="agent-2",
+                    reviewer_id="reviewer-2",
+                    reviewer_state="closed",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    review="- 审核结论：通过\n- 关闭状态：closed",
+                ),
+                make_item(
+                    3,
+                    "item-3",
+                    "Three",
+                    status="done",
+                    assigned="agent-3",
+                    reviewer_id="reviewer-3",
+                    reviewer_state="closed",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    review="- 审核结论：通过\n- 关闭状态：closed",
+                ),
+                make_item(
+                    4,
+                    "item-4",
+                    "Four",
+                    status="done",
+                    assigned="agent-4",
+                    reviewer_id="reviewer-4",
+                    reviewer_state="closed",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    review="- 审核结论：通过\n- 关闭状态：closed",
+                ),
+            )
+            .replace("- 完成状态：pending", "- 完成状态：complete")
+            .replace("- 用户请求内未交付内容：待完成", "- 用户请求内未交付内容：还有第二阶段")
+        )
+
+        payload = controller.validate_checklist(path)
+
+        self.assertFalse(payload["ok"])
+        self.assertIn("delivery_complete_with_unfinished_request_scope", violation_codes(payload))
+
+    def test_all_items_done_warns_until_delivery_summary_is_complete(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(
+                    1,
+                    "item-1",
+                    "One",
+                    status="done",
+                    assigned="agent-1",
+                    reviewer_id="reviewer-1",
+                    reviewer_state="closed",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    review="- 审核结论：通过\n- 关闭状态：closed",
+                ),
+                make_item(
+                    2,
+                    "item-2",
+                    "Two",
+                    status="done",
+                    assigned="agent-2",
+                    reviewer_id="reviewer-2",
+                    reviewer_state="closed",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    review="- 审核结论：通过\n- 关闭状态：closed",
+                ),
+                make_item(
+                    3,
+                    "item-3",
+                    "Three",
+                    status="done",
+                    assigned="agent-3",
+                    reviewer_id="reviewer-3",
+                    reviewer_state="closed",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    review="- 审核结论：通过\n- 关闭状态：closed",
+                ),
+                make_item(
+                    4,
+                    "item-4",
+                    "Four",
+                    status="done",
+                    assigned="agent-4",
+                    reviewer_id="reviewer-4",
+                    reviewer_state="closed",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    review="- 审核结论：通过\n- 关闭状态：closed",
+                ),
+            )
+        )
+
+        payload = controller.validate_checklist(path)
+
+        self.assertTrue(payload["ok"])
+        self.assertIn("delivery_summary_pending_after_all_items_done", violation_codes(payload))
 
     def test_cycle_emits_external_dispatch_packets_in_protocol_priority_order(self) -> None:
         path = write_temp_checklist(
@@ -261,6 +523,7 @@ class ControllerValidationTests(unittest.TestCase):
                     for index in range(1, 9)
                 ],
             )
+            mark_startup_ready(path)
 
             for index in range(1, 4):
                 item_id = f"item-{index}"
@@ -304,6 +567,7 @@ class ControllerValidationTests(unittest.TestCase):
                     for index in range(1, 6)
                 ],
             )
+            mark_startup_ready(path)
 
             for index in range(1, 6):
                 item_id = f"item-{index}"
@@ -569,6 +833,7 @@ class ControllerValidationTests(unittest.TestCase):
                     }
                 ],
             )
+            mark_startup_ready(path)
 
             self.assertTrue(controller.plan_item(path, "item-1", "- 计划：实现控制器并补测试")["ok"])
             self.assertTrue(controller.start_item(path, "item-1", "agent-1")["ok"])
@@ -611,6 +876,7 @@ class ControllerValidationTests(unittest.TestCase):
                     }
                 ],
             )
+            mark_startup_ready(path)
 
             plan_payload = controller.plan_item(
                 path,

@@ -35,6 +35,15 @@ KNOWN_STATUSES = {
     "changes-requested",
     "done",
 }
+ALLOWED_STARTUP_DECISIONS = {"ready", "needs-clarification"}
+ALLOWED_DELIVERY_STATUSES = {"pending", "complete", "blocked"}
+STARTUP_READY_REQUIRED_FIELDS = (
+    "任务目标",
+    "验收标准",
+    "代码侦察证据",
+    "工作包拆分理由",
+    "并行策略",
+)
 
 PLACEHOLDER_VALUES = {
     "",
@@ -46,6 +55,12 @@ PLACEHOLDER_VALUES = {
     "未开始",
     "not-started",
     "no content recorded.",
+}
+NO_SCOPE_GAP_VALUES = {
+    "无",
+    "none",
+    "n/a",
+    "[]",
 }
 
 APPROVAL_MARKERS = (
@@ -249,7 +264,15 @@ def build_cycle_plan(checklist_path: Union[str, Path]) -> Dict[str, object]:
     )
     has_errors = any(violation.severity == "error" for violation in violations)
     status_updates = [] if has_errors else _recommended_status_updates(items, item_by_id)
-    packets = [] if has_errors else _build_dispatch_packets(Path(checklist_path), items, item_by_id, agent_routing, workflow_context)
+    implementation_allowed = _startup_allows_implementation(parsed)
+    packets = [] if has_errors else _build_dispatch_packets(
+        Path(checklist_path),
+        items,
+        item_by_id,
+        agent_routing,
+        workflow_context,
+        implementation_allowed,
+    )
     active_items = [item["item_id"] for item in items if item.get("dispatch_status") == "active"]
     reviewing_items = [item["item_id"] for item in items if item.get("dispatch_status") == "in-review"]
     return {
@@ -263,6 +286,7 @@ def build_cycle_plan(checklist_path: Union[str, Path]) -> Dict[str, object]:
         "in_review_items": reviewing_items,
         "agent_routing": agent_routing,
         "workflow_context": workflow_context,
+        "implementation_allowed": implementation_allowed,
         "status_updates": status_updates,
         "dispatch_packets": [packet.to_dict() for packet in packets],
         "next_action": _next_action_text(status_updates, packets, violations),
@@ -303,6 +327,8 @@ def start_item(checklist_path: Union[str, Path], item_id: str, agent_id: str) ->
 
     # 这里把“能不能进入 active”的判断固定在代码里，避免弱 agent 只凭文字协议自行推进。
     _require_protocol_ready(parsed, snapshot)
+    if not _startup_allows_implementation(parsed):
+        raise ValueError("任务启动总规划的启动判定不是 ready，不能开始实施")
     _ensure_plan_ready(item)
     _ensure_dependencies_done(item, item_by_id)
     _ensure_implementation_concurrency_available(snapshot["items"], item)
@@ -576,6 +602,27 @@ def init_checklist(
         "- 关联旧 checklist：none",
         "- 处理动作：在当前 checklist 记录本次任务进度",
         "",
+        "## 完成契约",
+        f"- 用户原始请求范围：{request}",
+        "- 本 checklist 覆盖范围：当前 checklist 中所有 item 覆盖用户原始请求内事项",
+        "- 自划阶段是否可作为停止条件：否",
+        "- 允许中途停止条件：用户明确要求暂停 / blocker / needs-clarification",
+        "- 请求内未纳入事项：待确认",
+        "- 后续建议边界：只能写请求外增强项，不能把用户原始要求内的事项放到后续建议",
+        "",
+        "## 任务启动总规划",
+        f"- 任务目标：{request}",
+        "- 非目标：待填写",
+        "- 验收标准：待填写",
+        "- 已知约束：待填写",
+        "- 代码侦察证据：待填写",
+        "- 初步方案：待填写",
+        "- 工作包拆分理由：由调用方提供 item-level 工作包",
+        "- 并行策略：由 blocked_by 与 shared_surfaces 推导",
+        "- 主要风险：待填写",
+        "- 需要用户确认的问题：无",
+        "- 启动判定：needs-clarification",
+        "",
         "## 当前执行状态",
         "- 当前状态：进行中",
         "- 当前阻塞原因：无",
@@ -589,6 +636,17 @@ def init_checklist(
         "- 工作包映射：" + "、".join(item_ids),
         "- 并行批次说明：由 blocked_by 与 shared_surfaces 推导",
         "- 关键不可并行约束：由 DAG 与 shared_surfaces 固定化校验",
+        "",
+        "## 交付总结",
+        "- 完成状态：pending",
+        "- 用户请求内交付内容：待填写",
+        "- 用户请求内未交付内容：待完成",
+        "- 请求外后续建议：无",
+        "- 关键变更位置：待填写",
+        "- 最终验证证据：待填写",
+        "- 审核结果摘要：待填写",
+        "- 遗留风险：待填写",
+        "- 用户验收入口：待填写",
         "",
         "## Checklist",
     ]
@@ -715,8 +773,11 @@ def _build_protocol_violations(parsed: Any, snapshot: Dict[str, Any]) -> List[Co
     violations: List[ControllerViolation] = []
     items = list(snapshot.get("items", []))
     item_by_id = _item_by_id(items)
+    top_level_sections = getattr(parsed, "top_level_sections", {})
 
-    if "任务归属判定" not in getattr(parsed, "top_level_sections", {}):
+    violations.extend(_top_level_planning_violations(top_level_sections, items))
+
+    if "任务归属判定" not in top_level_sections:
         violations.append(
             ControllerViolation(
                 severity="error",
@@ -726,7 +787,7 @@ def _build_protocol_violations(parsed: Any, snapshot: Dict[str, Any]) -> List[Co
             )
         )
     else:
-        identity_result = _extract_bullet_value(parsed.top_level_sections["任务归属判定"], "判定结果")
+        identity_result = _extract_bullet_value(top_level_sections["任务归属判定"], "判定结果")
         if identity_result and identity_result not in {"same-task", "different-task", "uncertain"}:
             violations.append(
                 ControllerViolation(
@@ -809,6 +870,173 @@ def _build_protocol_violations(parsed: Any, snapshot: Dict[str, Any]) -> List[Co
     return violations
 
 
+def _top_level_planning_violations(top_level_sections: Dict[str, str], items: List[Dict[str, Any]]) -> List[ControllerViolation]:
+    violations: List[ControllerViolation] = []
+    startup_section = top_level_sections.get("任务启动总规划")
+    completion_section = top_level_sections.get("完成契约")
+    delivery_section = top_level_sections.get("交付总结")
+
+    if startup_section is None:
+        violations.append(
+            ControllerViolation(
+                severity="warning",
+                code="missing_startup_plan",
+                message="Checklist should include 任务启动总规划 before dispatching work",
+                heading="任务启动总规划",
+            )
+        )
+    else:
+        startup_decision = _extract_bullet_value(startup_section, "启动判定")
+        if not startup_decision:
+            violations.append(
+                ControllerViolation(
+                    severity="warning",
+                    code="missing_startup_decision",
+                    message="任务启动总规划 should record 启动判定",
+                    heading="任务启动总规划",
+                    key="启动判定",
+                )
+            )
+        elif startup_decision not in ALLOWED_STARTUP_DECISIONS:
+            violations.append(
+                ControllerViolation(
+                    severity="error",
+                    code="invalid_startup_decision",
+                    message=f"Invalid 启动判定: {startup_decision}",
+                    heading="任务启动总规划",
+                    key="启动判定",
+                )
+            )
+        elif startup_decision == "needs-clarification":
+            violations.append(
+                ControllerViolation(
+                    severity="warning",
+                    code="startup_needs_clarification_blocks_dispatch",
+                    message="启动判定为 needs-clarification；补齐规划或澄清前不得派发实施工作包",
+                    heading="任务启动总规划",
+                    key="启动判定",
+                )
+            )
+        elif startup_decision == "ready":
+            missing_startup_fields = [
+                key
+                for key in STARTUP_READY_REQUIRED_FIELDS
+                if _is_blankish(_extract_bullet_value(startup_section, key))
+            ]
+            if missing_startup_fields:
+                violations.append(
+                    ControllerViolation(
+                        severity="error",
+                        code="startup_ready_with_incomplete_startup_plan",
+                        message="启动判定为 ready 时，任务启动总规划关键字段不得为空或待填写：" + ", ".join(missing_startup_fields),
+                        heading="任务启动总规划",
+                        key="启动判定",
+                    )
+                )
+
+    if completion_section is None:
+        violations.append(
+            ControllerViolation(
+                severity="warning",
+                code="missing_completion_contract",
+                message="Checklist should include 完成契约 to bind the full user request scope",
+                heading="完成契约",
+            )
+        )
+    else:
+        phased_stop = _extract_bullet_value(completion_section, "自划阶段是否可作为停止条件")
+        if phased_stop and phased_stop != "否":
+            violations.append(
+                ControllerViolation(
+                    severity="warning",
+                    code="phase_stop_boundary_not_disabled",
+                    message="自划阶段不得作为完成边界；该字段应为 否",
+                    heading="完成契约",
+                    key="自划阶段是否可作为停止条件",
+                )
+            )
+        uncovered_scope = _extract_bullet_value(completion_section, "请求内未纳入事项")
+        startup_decision = _startup_decision_from_sections(top_level_sections)
+        if startup_decision == "ready" and _has_scope_gap(uncovered_scope):
+            violations.append(
+                ControllerViolation(
+                    severity="error",
+                    code="startup_ready_with_uncovered_request_scope",
+                    message="启动判定为 ready 时，请求内未纳入事项必须为 无；不能把用户原始请求内事项留到后续阶段",
+                    heading="完成契约",
+                    key="请求内未纳入事项",
+                )
+            )
+
+    if delivery_section is None:
+        violations.append(
+            ControllerViolation(
+                severity="warning",
+                code="missing_delivery_summary",
+                message="Checklist should include 交付总结 for final handoff",
+                heading="交付总结",
+            )
+        )
+    else:
+        delivery_status = _extract_bullet_value(delivery_section, "完成状态")
+        all_items_done = bool(items) and all(item.get("dispatch_status") == FINISHED_STATUS for item in items)
+        if delivery_status and delivery_status not in ALLOWED_DELIVERY_STATUSES:
+            violations.append(
+                ControllerViolation(
+                    severity="error",
+                    code="invalid_delivery_status",
+                    message=f"Invalid 完成状态: {delivery_status}",
+                    heading="交付总结",
+                    key="完成状态",
+                )
+            )
+        if delivery_status == "complete" and not all_items_done:
+            violations.append(
+                ControllerViolation(
+                    severity="error",
+                    code="delivery_complete_before_all_items_done",
+                    message="交付总结不能标记 complete，直到所有 item 均为 done",
+                    heading="交付总结",
+                    key="完成状态",
+                )
+            )
+        internal_undelivered = _extract_bullet_value(delivery_section, "用户请求内未交付内容")
+        if delivery_status == "complete" and _has_scope_gap(internal_undelivered):
+            violations.append(
+                ControllerViolation(
+                    severity="error",
+                    code="delivery_complete_with_unfinished_request_scope",
+                    message="完成状态为 complete 时，用户请求内未交付内容必须为 无",
+                    heading="交付总结",
+                    key="用户请求内未交付内容",
+                )
+            )
+        if all_items_done and delivery_status != "complete":
+            violations.append(
+                ControllerViolation(
+                    severity="warning",
+                    code="delivery_summary_pending_after_all_items_done",
+                    message="所有 item 已 done；宣布完成前应补齐交付总结并将完成状态设为 complete",
+                    heading="交付总结",
+                    key="完成状态",
+                )
+            )
+
+    return violations
+
+
+def _startup_decision_from_sections(top_level_sections: Dict[str, str]) -> str:
+    startup_section = top_level_sections.get("任务启动总规划", "")
+    return _extract_bullet_value(startup_section, "启动判定").strip()
+
+
+def _has_scope_gap(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return text.casefold() not in NO_SCOPE_GAP_VALUES
+
+
 def _surface_conflict_violations(items: List[Dict[str, Any]], code: str) -> List[ControllerViolation]:
     violations: List[ControllerViolation] = []
     for index, left in enumerate(items):
@@ -872,17 +1100,42 @@ def _workflow_context(parsed: Any) -> Dict[str, str]:
     assignment_text = top_level_sections.get("任务归属判定", "")
     restructuring_text = top_level_sections.get("任务重整摘要", "")
     status_text = top_level_sections.get("当前执行状态", "")
+    startup_text = top_level_sections.get("任务启动总规划", "")
+    completion_text = top_level_sections.get("完成契约", "")
+    delivery_text = top_level_sections.get("交付总结", "")
     current_request = _meaningful_text(_extract_bullet_value(assignment_text, "当前请求"))
+    original_request_scope = _meaningful_text(_extract_bullet_value(completion_text, "用户原始请求范围"))
+    startup_goal = _meaningful_text(_extract_bullet_value(startup_text, "任务目标"))
+    acceptance_criteria = _meaningful_text(_extract_bullet_value(startup_text, "验收标准"))
+    startup_decision = _meaningful_text(_extract_bullet_value(startup_text, "启动判定"))
+    delivery_status = _meaningful_text(_extract_bullet_value(delivery_text, "完成状态"))
     work_mapping = _meaningful_text(_extract_bullet_value(restructuring_text, "工作包映射"))
     parallel_summary = _meaningful_text(_extract_bullet_value(restructuring_text, "并行批次说明"))
     current_summary = _meaningful_text(_extract_bullet_value(status_text, "当前调度摘要"))
     return {
         "current_request": current_request,
-        "workflow_goal": current_request or "完成当前 checklist 记录的大任务",
+        "original_request_scope": original_request_scope,
+        "workflow_goal": startup_goal or original_request_scope or current_request or "完成当前 checklist 记录的大任务",
+        "acceptance_criteria": acceptance_criteria,
+        "startup_decision": startup_decision,
+        "delivery_status": delivery_status,
         "work_mapping": work_mapping,
         "parallel_summary": parallel_summary,
         "current_summary": current_summary,
     }
+
+
+def _startup_allows_implementation(parsed: Any) -> bool:
+    top_level_sections = getattr(parsed, "top_level_sections", {})
+    startup_text = top_level_sections.get("任务启动总规划", "")
+    decision = _extract_bullet_value(startup_text, "启动判定").strip().casefold()
+    if not decision:
+        # 兼容早期 checklist：缺少启动总规划时不额外阻断既有工作流。
+        return True
+    if decision not in ALLOWED_STARTUP_DECISIONS:
+        # validate 会负责结构性问题；cycle 这里保持向后兼容，避免误卡旧任务。
+        return True
+    return decision == "ready"
 
 
 def _resolve_agent_route(
@@ -946,6 +1199,7 @@ def _build_dispatch_packets(
     item_by_id: Dict[str, Dict[str, Any]],
     agent_routing: Dict[str, str],
     workflow_context: Dict[str, str],
+    implementation_allowed: bool = True,
 ) -> List[DispatchPacket]:
     packets: List[DispatchPacket] = []
     active_count = sum(1 for item in items if item.get("dispatch_status") == "active")
@@ -964,8 +1218,10 @@ def _build_dispatch_packets(
             continue
         if _is_blankish(item.get("plan")):
             packets.append(_planning_packet(checklist_path, item, "replan", agent_routing, workflow_context))
-        else:
+        elif implementation_allowed:
             packets.append(_implementation_packet(checklist_path, item, "rework", agent_routing, workflow_context))
+        else:
+            continue
         selected_surfaces.update(surfaces)
         active_count += 1
 
@@ -987,12 +1243,15 @@ def _build_dispatch_packets(
         if _missing_done_dependencies(item, item_by_id):
             continue
         surfaces = set(item.get("shared_surfaces") or [])
-        if surfaces.intersection(active_surfaces | selected_surfaces):
-            continue
         if _is_blankish(item.get("plan")):
             packets.append(_planning_packet(checklist_path, item, "planning", agent_routing, workflow_context))
-        else:
+            continue
+        if surfaces.intersection(active_surfaces | selected_surfaces):
+            continue
+        if implementation_allowed:
             packets.append(_implementation_packet(checklist_path, item, "implementation", agent_routing, workflow_context))
+        else:
+            continue
         selected_surfaces.update(surfaces)
         active_count += 1
 

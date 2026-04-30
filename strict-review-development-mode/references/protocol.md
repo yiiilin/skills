@@ -46,11 +46,51 @@ controller 在执行 `plan`、`mark-implemented`、`request-changes`、`approve`
 - 总 checklist
 - `文档位置`
 - `任务归属判定`
+- `完成契约`
+- `任务启动总规划`
 - `任务重整摘要`
+- `交付总结`
 - item-level DAG 说明
 - Mermaid DAG
 - 每项的结构化字段、计划、实施记录、验证记录、审核记录
 - `当前状态` / `阻塞原因` / `下一动作`
+
+`完成契约` 固定用户原始请求范围，禁止把 coordinator 自行划出的阶段作为停止条件：
+
+- `用户原始请求范围`
+- `本 checklist 覆盖范围`
+- `自划阶段是否可作为停止条件`：必须为 `否`
+- `允许中途停止条件`：用户明确要求暂停 / blocker / needs-clarification
+- `请求内未纳入事项`：`启动判定` 为 `ready` 时必须为 `无`
+- `后续建议边界`：只能写请求外增强项，不能把用户原始要求内的事项放到后续建议
+
+`任务启动总规划` 是实施前的总规划 gate：
+
+- `任务目标`
+- `非目标`
+- `验收标准`
+- `已知约束`
+- `代码侦察证据`
+- `初步方案`
+- `工作包拆分理由`
+- `并行策略`
+- `主要风险`
+- `需要用户确认的问题`
+- `启动判定`：只允许 `ready` 或 `needs-clarification`
+
+`init` 默认写入 `启动判定：needs-clarification` 和 `请求内未纳入事项：待确认`。coordinator 必须补齐启动规划、确认请求内事项全部纳入 checklist 后，才能把 `启动判定` 改为 `ready`。`ready` 至少要求 `任务目标`、`验收标准`、`代码侦察证据`、`工作包拆分理由`、`并行策略` 不为空或占位。
+
+`交付总结` 是结束前的交付 gate：
+
+- `完成状态`：只允许 `pending`、`complete` 或 `blocked`
+- `用户请求内交付内容`
+- `用户请求内未交付内容`：`完成状态` 为 `complete` 时必须为 `无`
+- `请求外后续建议`
+- `关键变更位置`
+- `最终验证证据`
+- `审核结果摘要`
+- `遗留风险`
+- `用户验收入口`
 
 每项结构化字段至少包含：
 
@@ -128,7 +168,13 @@ python3 strict-review-development-mode/controller.py cycle --checklist .strict-r
 2. `implemented` 或 `review-queued` -> `review`
 3. `ready` -> `planning` 或 `implementation`
 
+如果 `任务启动总规划` 的 `启动判定` 为 `needs-clarification`，controller 不得派发 `implementation` 或 `rework` packet，也不得允许 `start` 进入实施；只能继续补规划、澄清问题或处理已经进入 review 的事项。缺少该章节的历史 checklist 先报 warning 并保持兼容。
+
+coordinator 自行拆出的 phase、阶段、wave、批次只用于内部调度，不能成为停止条件。所有属于用户原始请求范围的事项必须进入 checklist；未纳入事项必须记录在 `完成契约`，且不能在 `启动判定：ready` 时继续推进。
+
 子 agent 数量不设固定并发上限。controller 仍会用 DAG 依赖和 `shared_surfaces` 冲突控制实施安全边界，reviewer 仍必须保持独立且不能自审。
+
+planning 和 review packet 可并行时优先并行。共享面相同的 ready item 可以同时派发 planning packet，因为计划写作不进入实施状态；implementation / rework packet 仍受 DAG 依赖和 `shared_surfaces` 冲突约束，避免并行写同一共享面。
 
 packet 包含路由字段：
 
@@ -212,3 +258,5 @@ python3 strict-review-development-mode/controller.py replace-reviewer --checklis
 - 所有 item 均为 `done`
 - reviewer 均已关闭
 - checklist 勾选状态已同步
+- `交付总结` 已补齐且 `完成状态` 为 `complete`
+- `用户请求内未交付内容` 为 `无`
