@@ -8,6 +8,7 @@
 - task_slug：<描述当前强审开发任务解决的问题>
 - checklist：.strict-review/<task-slug>/checklist.md
 - 派工文档命名：.strict-review/<task-slug>/<item_id>-<kind>.md
+- 批量审核文档命名：.strict-review/<task-slug>/<review_group>-review-batch.md
 - 约束：强审流程产生的计划、实施、验证、审核等文档只写入上述任务目录
 
 ## 审核设置
@@ -127,7 +128,9 @@ graph TD
 - assigned_subagent：none
 - reviewer_id：none
 - reviewer_state：not-started
-- 风险等级：待填写
+- risk_level：medium
+- review_mode：single
+- review_group：none
 - 当前状态：未开始
 - 阻塞原因：无
 - next_action：补齐计划后进入实施调度
@@ -164,7 +167,9 @@ graph TD
 - assigned_subagent：none
 - reviewer_id：none
 - reviewer_state：not-started
-- 风险等级：待填写
+- risk_level：medium
+- review_mode：single
+- review_group：none
 - 当前状态：未开始
 - 阻塞原因：无
 - next_action：补齐计划后进入实施调度
@@ -201,7 +206,9 @@ graph TD
 - assigned_subagent：none
 - reviewer_id：none
 - reviewer_state：not-started
-- 风险等级：待填写
+- risk_level：medium
+- review_mode：single
+- review_group：none
 - 当前状态：未开始
 - 阻塞原因：等待 item-1 与 item-2 进入 done
 - next_action：等待上游依赖完成后重算 dispatch_status
@@ -238,7 +245,9 @@ graph TD
 - assigned_subagent：none
 - reviewer_id：none
 - reviewer_state：not-started
-- 风险等级：待填写
+- risk_level：medium
+- review_mode：single
+- review_group：none
 - 当前状态：未开始
 - 阻塞原因：无
 - next_action：补齐计划后进入实施调度

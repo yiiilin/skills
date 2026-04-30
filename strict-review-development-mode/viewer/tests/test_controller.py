@@ -488,6 +488,202 @@ class ControllerValidationTests(unittest.TestCase):
         self.assertEqual(["current", "current", "current", "current"], [packet["target_agent"] for packet in packets])
         self.assertEqual("coordinator-decides", packets[0]["invocation_policy"])
 
+    def test_cycle_batches_eligible_review_items_in_same_group(self) -> None:
+        batch_fields = "- risk_level：low\n- review_mode：batch-eligible\n- review_group：ui-review"
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(
+                    1,
+                    "item-1",
+                    "One",
+                    status="implemented",
+                    implementation="- 已实现 item-1",
+                    verification="- 已验证 item-1",
+                    extra_fields=batch_fields,
+                ),
+                make_item(
+                    2,
+                    "item-2",
+                    "Two",
+                    status="review-queued",
+                    implementation="- 已实现 item-2",
+                    verification="- 已验证 item-2",
+                    extra_fields=batch_fields,
+                ),
+                make_item(
+                    3,
+                    "item-3",
+                    "Three",
+                    status="done",
+                    assigned="agent-3",
+                    reviewer_id="reviewer-3",
+                    reviewer_state="closed",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    review="- 审核结论：通过\n- 关闭状态：closed",
+                ),
+                make_item(
+                    4,
+                    "item-4",
+                    "Four",
+                    status="done",
+                    assigned="agent-4",
+                    reviewer_id="reviewer-4",
+                    reviewer_state="closed",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    review="- 审核结论：通过\n- 关闭状态：closed",
+                ),
+            )
+        )
+
+        payload = controller.build_cycle_plan(path)
+
+        self.assertTrue(payload["ok"])
+        packets = payload["dispatch_packets"]
+        self.assertEqual(["review-batch"], [packet["packet_type"] for packet in packets])
+        batch_packet = packets[0]
+        self.assertEqual("batch:ui-review", batch_packet["item_id"])
+        self.assertEqual("ui-review", batch_packet["review_group"])
+        self.assertEqual(["item-1", "item-2"], batch_packet["item_ids"])
+        self.assertTrue(batch_packet["output_artifacts"]["review_batch_file"].endswith("ui-review-review-batch.md"))
+        self.assertTrue(batch_packet["output_artifacts"]["per_item_review_files"]["item-1"].endswith("item-1-review.md"))
+        self.assertEqual({"item-1", "item-2"}, set(batch_packet["commands"]["assign_reviewer_by_item"]))
+        self.assertIn("request-changes", batch_packet["commands"]["request_changes_by_item"]["item-1"])
+        self.assertIn("item-1-review.md", batch_packet["commands"]["request_changes_by_item"]["item-1"])
+        self.assertIn("approve", batch_packet["commands"]["approve_by_item"]["item-2"])
+        self.assertIn("逐项", "\n".join(batch_packet["success_criteria"]))
+
+    def test_single_batch_eligible_item_falls_back_to_single_review(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(
+                    1,
+                    "item-1",
+                    "One",
+                    status="implemented",
+                    implementation="- 已实现 item-1",
+                    verification="- 已验证 item-1",
+                    extra_fields="- risk_level：medium\n- review_mode：batch-eligible\n- review_group：ui-review",
+                ),
+                make_item(
+                    2,
+                    "item-2",
+                    "Two",
+                    status="done",
+                    assigned="agent-2",
+                    reviewer_id="reviewer-2",
+                    reviewer_state="closed",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    review="- 审核结论：通过\n- 关闭状态：closed",
+                ),
+                make_item(
+                    3,
+                    "item-3",
+                    "Three",
+                    status="done",
+                    assigned="agent-3",
+                    reviewer_id="reviewer-3",
+                    reviewer_state="closed",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    review="- 审核结论：通过\n- 关闭状态：closed",
+                ),
+                make_item(
+                    4,
+                    "item-4",
+                    "Four",
+                    status="done",
+                    assigned="agent-4",
+                    reviewer_id="reviewer-4",
+                    reviewer_state="closed",
+                    implementation="- 已实现",
+                    verification="- 已验证",
+                    review="- 审核结论：通过\n- 关闭状态：closed",
+                ),
+            )
+        )
+
+        payload = controller.build_cycle_plan(path)
+
+        packets = payload["dispatch_packets"]
+        self.assertEqual(["review"], [packet["packet_type"] for packet in packets])
+        self.assertEqual("item-1", packets[0]["item_id"])
+        self.assertNotIn("item_ids", packets[0])
+
+    def test_different_batch_review_groups_emit_separate_packets(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(
+                    1,
+                    "item-1",
+                    "One",
+                    status="implemented",
+                    implementation="- 已实现 item-1",
+                    verification="- 已验证 item-1",
+                    extra_fields="- risk_level：low\n- review_mode：batch-eligible\n- review_group：group-a",
+                ),
+                make_item(
+                    2,
+                    "item-2",
+                    "Two",
+                    status="implemented",
+                    implementation="- 已实现 item-2",
+                    verification="- 已验证 item-2",
+                    extra_fields="- risk_level：low\n- review_mode：batch-eligible\n- review_group：group-a",
+                ),
+                make_item(
+                    3,
+                    "item-3",
+                    "Three",
+                    status="implemented",
+                    implementation="- 已实现 item-3",
+                    verification="- 已验证 item-3",
+                    extra_fields="- risk_level：medium\n- review_mode：batch-eligible\n- review_group：group-b",
+                ),
+                make_item(
+                    4,
+                    "item-4",
+                    "Four",
+                    status="implemented",
+                    implementation="- 已实现 item-4",
+                    verification="- 已验证 item-4",
+                    extra_fields="- risk_level：medium\n- review_mode：batch-eligible\n- review_group：group-b",
+                ),
+            )
+        )
+
+        payload = controller.build_cycle_plan(path)
+
+        packets = payload["dispatch_packets"]
+        self.assertEqual(["review-batch", "review-batch"], [packet["packet_type"] for packet in packets])
+        self.assertEqual(["group-a", "group-b"], [packet["review_group"] for packet in packets])
+        self.assertEqual([["item-1", "item-2"], ["item-3", "item-4"]], [packet["item_ids"] for packet in packets])
+
+    def test_validate_rejects_high_risk_batch_review_item(self) -> None:
+        path = write_temp_checklist(
+            build_checklist(
+                make_item(
+                    1,
+                    "item-1",
+                    "One",
+                    status="implemented",
+                    implementation="- 已实现 item-1",
+                    verification="- 已验证 item-1",
+                    extra_fields="- risk_level：high\n- review_mode：batch-eligible\n- review_group：security-review",
+                ),
+                make_item(2, "item-2", "Two"),
+                make_item(3, "item-3", "Three"),
+                make_item(4, "item-4", "Four"),
+            )
+        )
+
+        payload = controller.validate_checklist(path)
+
+        self.assertFalse(payload["ok"])
+        self.assertIn("high_risk_batch_review_not_allowed", violation_codes(payload))
+
     def test_cycle_emits_planning_packet_before_unplanned_ready_implementation(self) -> None:
         path = write_temp_checklist(
             build_checklist(
@@ -1062,6 +1258,9 @@ class ControllerValidationTests(unittest.TestCase):
             self.assertIn("## 文档位置", path.read_text(encoding="utf-8"))
             self.assertIn(f"- 专属目录：{path.parent}", path.read_text(encoding="utf-8"))
             self.assertIn("- fallback_agent：current", path.read_text(encoding="utf-8"))
+            self.assertIn("- risk_level：medium", path.read_text(encoding="utf-8"))
+            self.assertIn("- review_mode：single", path.read_text(encoding="utf-8"))
+            self.assertIn("- review_group：none", path.read_text(encoding="utf-8"))
             self.assertTrue(path.parent.is_dir())
 
     def test_cli_set_routing_accepts_user_agent_preferences(self) -> None:

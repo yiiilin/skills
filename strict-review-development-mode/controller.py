@@ -37,6 +37,9 @@ KNOWN_STATUSES = {
 }
 ALLOWED_STARTUP_DECISIONS = {"ready", "needs-clarification"}
 ALLOWED_DELIVERY_STATUSES = {"pending", "complete", "blocked"}
+ALLOWED_REVIEW_MODES = {"single", "batch-eligible"}
+ALLOWED_RISK_LEVELS = {"low", "medium", "high"}
+BATCH_REVIEW_MIN_ITEMS = 2
 STARTUP_READY_REQUIRED_FIELDS = (
     "任务目标",
     "验收标准",
@@ -113,6 +116,7 @@ ROUTE_KEYS_BY_PACKET_TYPE = {
     "implementation": ("implementation_agent",),
     "rework": ("rework_agent", "implementation_agent"),
     "review": ("review_agent",),
+    "review-batch": ("review_agent",),
 }
 
 ROLE_BY_PACKET_TYPE = {
@@ -121,6 +125,7 @@ ROLE_BY_PACKET_TYPE = {
     "implementation": "implementation",
     "rework": "rework",
     "review": "review",
+    "review-batch": "review",
 }
 
 GLOBAL_ROUTING_KEYS = (
@@ -178,16 +183,19 @@ class DispatchPacket:
     non_goals: List[str]
     handoff_requirements: List[str]
     input_artifacts: Dict[str, object]
-    output_artifacts: Dict[str, str]
-    commands: Dict[str, str]
+    output_artifacts: Dict[str, object]
+    commands: Dict[str, object]
     command: str
     prompt: str
     shared_surfaces: List[str]
     blocked_by: List[str]
     blocks: List[str]
+    item_ids: Optional[List[str]] = None
+    review_group: Optional[str] = None
+    batch_items: Optional[List[Dict[str, object]]] = None
 
     def to_dict(self) -> Dict[str, object]:
-        return {
+        payload: Dict[str, object] = {
             "packet_type": self.packet_type,
             "role": self.role,
             "target_agent": self.target_agent,
@@ -211,6 +219,13 @@ class DispatchPacket:
             "blocked_by": self.blocked_by,
             "blocks": self.blocks,
         }
+        if self.item_ids is not None:
+            payload["item_ids"] = self.item_ids
+        if self.review_group is not None:
+            payload["review_group"] = self.review_group
+        if self.batch_items is not None:
+            payload["batch_items"] = self.batch_items
+        return payload
 
 
 def _load_local_module(module_basename: str) -> ModuleType:
@@ -672,6 +687,9 @@ def init_checklist(
         blocks = [candidate_id for candidate_id, candidate in item_by_id.items() if item_id in _normalize_list(candidate.get("blocked_by"))]
         status = "blocked" if blocked_by else "ready"
         title_text = str(item.get("title") or item_id)
+        risk_level = _item_definition_field(item, ("risk_level", "风险等级"), "medium")
+        review_mode = _item_definition_field(item, ("review_mode",), "single")
+        review_group = _item_definition_field(item, ("review_group",), "none")
         lines.extend(
             [
                 f"## Item {index} - {title_text}",
@@ -685,6 +703,9 @@ def init_checklist(
                 "- assigned_subagent：none",
                 "- reviewer_id：none",
                 "- reviewer_state：not-started",
+                f"- risk_level：{risk_level}",
+                f"- review_mode：{review_mode}",
+                f"- review_group：{review_group}",
                 "- 当前状态：未开始",
                 "- 阻塞原因：无" if status == "ready" else "- 阻塞原因：等待上游依赖完成",
                 "- next_action：写入计划后等待 start 命令",
@@ -859,6 +880,19 @@ def _build_protocol_violations(parsed: Any, snapshot: Dict[str, Any]) -> List[Co
             assigned_subagent = _field(item, "assigned_subagent")
             if reviewer_id and assigned_subagent and reviewer_id == assigned_subagent:
                 violations.append(_item_error(item, "reviewer_same_as_assigned_subagent", "Reviewer must be independent from implementation agent", "reviewer_id"))
+        review_mode_raw = _first_meaningful_field(item, ("review_mode",))
+        review_mode = _item_review_mode(item)
+        risk_level_raw = _first_meaningful_field(item, ("risk_level", "风险等级"))
+        risk_level = _item_risk_level(item)
+        if review_mode_raw and review_mode not in ALLOWED_REVIEW_MODES:
+            violations.append(_item_error(item, "invalid_review_mode", "review_mode must be single or batch-eligible", "review_mode"))
+        if risk_level_raw and risk_level not in ALLOWED_RISK_LEVELS:
+            violations.append(_item_error(item, "invalid_risk_level", "risk_level must be low, medium, or high", "risk_level"))
+        if review_mode == "batch-eligible":
+            if not _item_review_group(item):
+                violations.append(_item_error(item, "batch_review_without_group", "batch-eligible item must record review_group", "review_group"))
+            if risk_level == "high":
+                violations.append(_item_error(item, "high_risk_batch_review_not_allowed", "high risk items must use single review", "risk_level"))
         if status == "changes-requested" and _is_blankish(item.get("review_record")):
             violations.append(_item_error(item, "changes_requested_without_review", "changes-requested item must record reviewer feedback", "审核记录"))
         if status == "done":
@@ -1225,13 +1259,27 @@ def _build_dispatch_packets(
         selected_surfaces.update(surfaces)
         active_count += 1
 
+    review_candidates: List[Dict[str, Any]] = []
     for item in items:
         if item.get("dispatch_status") not in {"implemented", "review-queued"}:
             continue
-        if _limit_reached(reviewer_count, REVIEWER_LIMIT):
-            break
         if _is_blankish(item.get("implementation_record")) or _is_blankish(item.get("verification_record")):
             continue
+        review_candidates.append(item)
+
+    batched_item_ids: Set[str] = set()
+    for batch_items in _batch_review_groups(review_candidates, agent_routing):
+        if _limit_reached(reviewer_count, REVIEWER_LIMIT):
+            break
+        packets.append(_review_batch_packet(checklist_path, batch_items, agent_routing, workflow_context))
+        batched_item_ids.update(_item_id(item) for item in batch_items)
+        reviewer_count += 1
+
+    for item in review_candidates:
+        if _item_id(item) in batched_item_ids:
+            continue
+        if _limit_reached(reviewer_count, REVIEWER_LIMIT):
+            break
         packets.append(_review_packet(checklist_path, item, agent_routing, workflow_context))
         reviewer_count += 1
 
@@ -1256,6 +1304,41 @@ def _build_dispatch_packets(
         active_count += 1
 
     return packets
+
+
+def _batch_review_groups(
+    review_candidates: List[Dict[str, Any]],
+    agent_routing: Dict[str, str],
+) -> List[List[Dict[str, Any]]]:
+    grouped: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
+    for item in review_candidates:
+        if not _is_batch_review_candidate(item):
+            continue
+        route = _resolve_agent_route("review-batch", item, agent_routing)
+        group_key = (
+            _item_review_group(item),
+            route["target_agent"],
+            route["fallback_agent"],
+        )
+        grouped.setdefault(group_key, []).append(item)
+
+    # 只把真正有阅读复用价值的组升级成 batch；单个 item 保持原有单审路径。
+    return [
+        batch_items
+        for batch_items in grouped.values()
+        if len(batch_items) >= BATCH_REVIEW_MIN_ITEMS
+    ]
+
+
+def _is_batch_review_candidate(item: Dict[str, Any]) -> bool:
+    return (
+        item.get("dispatch_status") in {"implemented", "review-queued"}
+        and not _is_blankish(item.get("implementation_record"))
+        and not _is_blankish(item.get("verification_record"))
+        and _item_review_mode(item) == "batch-eligible"
+        and bool(_item_review_group(item))
+        and _item_risk_level(item) != "high"
+    )
 
 
 def _planning_packet(
@@ -1361,12 +1444,9 @@ def _review_packet(
     title = str(item.get("title") or item.get("heading") or item_id)
     output_artifacts = _packet_output_artifacts(checklist_path, item_id, "review", workflow_context)
     review_file = output_artifacts["review_file"]
-    command = f"python3 {CONTROLLER_PATH} assign-reviewer --checklist {checklist_path} --item {item_id} --reviewer <reviewer-id>"
-    request_changes_command = (
-        f"python3 {CONTROLLER_PATH} request-changes --checklist {checklist_path} --item {item_id} "
-        f"--review-file {review_file}"
-    )
-    approve_command = f"python3 {CONTROLLER_PATH} approve --checklist {checklist_path} --item {item_id} --review-file {review_file}"
+    command = _assign_reviewer_command(checklist_path, item_id)
+    request_changes_command = _request_changes_command(checklist_path, item_id, str(review_file))
+    approve_command = _approve_command(checklist_path, item_id, str(review_file))
     prompt = (
         f"审核 {item_id} - {title}。检查是否符合计划、DAG、shared_surfaces 和验证记录；"
         f"审核文档写到 {review_file}，正文不要使用 H1/H2/H3 标题；若有问题用 request-changes，若通过用 approve。"
@@ -1400,6 +1480,59 @@ def _review_packet(
         shared_surfaces=list(item.get("shared_surfaces") or []),
         blocked_by=list(item.get("blocked_by") or []),
         blocks=list(item.get("blocks") or []),
+    )
+
+
+def _review_batch_packet(
+    checklist_path: Path,
+    items: List[Dict[str, Any]],
+    agent_routing: Dict[str, str],
+    workflow_context: Dict[str, str],
+) -> DispatchPacket:
+    first_item = items[0]
+    review_group = _item_review_group(first_item)
+    item_ids = [_item_id(item) for item in items]
+    title = f"{review_group} 批量审核：" + ", ".join(item_ids)
+    output_artifacts = _review_batch_output_artifacts(checklist_path, review_group, item_ids, workflow_context)
+    batch_review_file = str(output_artifacts["review_batch_file"])
+    raw_review_files = output_artifacts["per_item_review_files"]
+    per_item_review_files = {str(key): str(value) for key, value in raw_review_files.items()} if isinstance(raw_review_files, dict) else {}
+    command = "逐项执行 packet.commands.assign_reviewer_by_item；不要把状态迁移合并成单条命令"
+    prompt = (
+        f"批量审核 review_group={review_group} 的 {len(items)} 个事项：{', '.join(item_ids)}。"
+        f"一次性阅读共享上下文，但必须逐项给出审核结论；批量审核文档写到 {batch_review_file}，"
+        "每个 item 的写回片段写到对应 per_item_review_files；正文不要使用 H1/H2/H3 标题；"
+        "每个 item 仍需分别执行 assign-reviewer 后，再逐项 request-changes 或 approve。"
+    )
+    route = _resolve_agent_route("review-batch", first_item, agent_routing)
+    contract = _review_batch_contract(items, workflow_context)
+    batch_commands = _batch_review_commands(checklist_path, item_ids, per_item_review_files)
+    return DispatchPacket(
+        packet_type="review-batch",
+        role=route["role"],
+        target_agent=route["target_agent"],
+        fallback_agent=route["fallback_agent"],
+        routing_source=route["routing_source"],
+        invocation_policy=INVOCATION_POLICY,
+        item_id=f"batch:{review_group}",
+        title=title,
+        workflow_goal=contract["workflow_goal"],
+        agent_objective=contract["agent_objective"],
+        local_scope=contract["local_scope"],
+        success_criteria=contract["success_criteria"],
+        non_goals=contract["non_goals"],
+        handoff_requirements=contract["handoff_requirements"],
+        input_artifacts=contract["input_artifacts"],
+        output_artifacts=output_artifacts,
+        commands=batch_commands,
+        command=command,
+        prompt=prompt,
+        shared_surfaces=sorted({surface for item in items for surface in list(item.get("shared_surfaces") or [])}),
+        blocked_by=sorted({dependency for item in items for dependency in list(item.get("blocked_by") or [])}),
+        blocks=sorted({blocked for item in items for blocked in list(item.get("blocks") or [])}),
+        item_ids=item_ids,
+        review_group=review_group,
+        batch_items=_batch_item_summaries(items),
     )
 
 
@@ -1491,6 +1624,54 @@ def _review_contract(item: Dict[str, Any], workflow_context: Dict[str, str]) -> 
     )
 
 
+def _review_batch_contract(items: List[Dict[str, Any]], workflow_context: Dict[str, str]) -> Dict[str, Any]:
+    review_group = _item_review_group(items[0])
+    item_ids = [_item_id(item) for item in items]
+    item_titles = ", ".join(f"{_item_id(item)} - {item.get('title') or item.get('heading') or _item_id(item)}" for item in items)
+    return _packet_contract_for_batch(
+        workflow_context,
+        f"批量审核 {review_group} 内的 {len(items)} 个低/中风险事项，并为每个 item 分别决定通过或要求修改。",
+        [
+            "一次性阅读同组 item 的计划、实施记录、验证记录，减少重复上下文加载",
+            "每个 item 必须有独立结论、独立问题列表和独立通过/驳回理由",
+            "发现问题时只对对应 item 使用 request-changes；确认通过时只对对应 item 使用 approve",
+            "批量审核文档可共用，但 controller 状态迁移必须逐项执行",
+        ],
+        [
+            "不要给整组 blanket approval",
+            "不要把一个 item 的问题扩散成其他 item 的驳回理由，除非能逐项说明影响",
+            "不要直接修代码",
+            "不要审核本批次之外的 item",
+        ],
+        [
+            "先对每个 item 分别使用 packet.commands.assign_reviewer_by_item 中的命令领取审核",
+            "将批量审核记录写入 packet.output_artifacts.review_batch_file",
+            "将每个 item 的可写回审核片段写入 packet.output_artifacts.per_item_review_files[item_id]",
+            "逐项使用 packet.commands.request_changes_by_item 或 packet.commands.approve_by_item 写回结论",
+        ],
+        {
+            "workflow_context": workflow_context,
+            "review_group": review_group,
+            "item_ids": item_ids,
+            "items": [
+                _input_artifacts(
+                    item,
+                    workflow_context,
+                    include_plan=True,
+                    include_implementation=True,
+                    include_verification=True,
+                    include_review=False,
+                )
+                for item in items
+            ],
+        },
+        [
+            f"批量范围：review_group={review_group}",
+            f"本批 item：{item_titles}",
+        ],
+    )
+
+
 def _packet_contract(
     item: Dict[str, Any],
     workflow_context: Dict[str, str],
@@ -1512,6 +1693,34 @@ def _packet_contract(
         "workflow_goal": workflow_context.get("workflow_goal") or "完成当前 checklist 记录的大任务",
         "agent_objective": agent_objective,
         "local_scope": _local_scope(item),
+        "success_criteria": success_criteria,
+        "non_goals": non_goals,
+        "handoff_requirements": normalized_handoff_requirements,
+        "input_artifacts": input_artifacts,
+    }
+
+
+def _packet_contract_for_batch(
+    workflow_context: Dict[str, str],
+    agent_objective: str,
+    success_criteria: List[str],
+    role_non_goals: List[str],
+    handoff_requirements: List[str],
+    input_artifacts: Dict[str, object],
+    local_scope: List[str],
+) -> Dict[str, Any]:
+    normalized_handoff_requirements = [ARTIFACT_MARKDOWN_REQUIREMENT]
+    normalized_handoff_requirements.extend(handoff_requirements)
+    non_goals = [
+        "不要操心全局调度、其他 agent 分工或未分配给本批次的事项",
+        "不要手改 dispatch_status、assigned_subagent、reviewer_id、reviewer_state 或 checklist 勾选状态",
+        "不要把强审流程文档写到项目根目录；只使用 packet.output_artifacts 指向的点号专属目录",
+    ]
+    non_goals.extend(role_non_goals)
+    return {
+        "workflow_goal": workflow_context.get("workflow_goal") or "完成当前 checklist 记录的大任务",
+        "agent_objective": agent_objective,
+        "local_scope": local_scope,
         "success_criteria": success_criteria,
         "non_goals": non_goals,
         "handoff_requirements": normalized_handoff_requirements,
@@ -1566,6 +1775,41 @@ def _add_artifact(artifacts: Dict[str, object], key: str, value: Any) -> None:
     text = _meaningful_text(value)
     if text:
         artifacts[key] = text
+
+
+def _assign_reviewer_command(checklist_path: Union[str, Path], item_id: str) -> str:
+    return f"python3 {CONTROLLER_PATH} assign-reviewer --checklist {checklist_path} --item {item_id} --reviewer <reviewer-id>"
+
+
+def _request_changes_command(checklist_path: Union[str, Path], item_id: str, review_file: str) -> str:
+    return f"python3 {CONTROLLER_PATH} request-changes --checklist {checklist_path} --item {item_id} --review-file {review_file}"
+
+
+def _approve_command(checklist_path: Union[str, Path], item_id: str, review_file: str) -> str:
+    return f"python3 {CONTROLLER_PATH} approve --checklist {checklist_path} --item {item_id} --review-file {review_file}"
+
+
+def _batch_review_commands(checklist_path: Union[str, Path], item_ids: List[str], review_files: Dict[str, str]) -> Dict[str, object]:
+    return {
+        "assign_reviewer_by_item": {item_id: _assign_reviewer_command(checklist_path, item_id) for item_id in item_ids},
+        "request_changes_by_item": {item_id: _request_changes_command(checklist_path, item_id, review_files[item_id]) for item_id in item_ids},
+        "approve_by_item": {item_id: _approve_command(checklist_path, item_id, review_files[item_id]) for item_id in item_ids},
+    }
+
+
+def _batch_item_summaries(items: List[Dict[str, Any]]) -> List[Dict[str, object]]:
+    return [
+        {
+            "item_id": _item_id(item),
+            "title": str(item.get("title") or item.get("heading") or _item_id(item)),
+            "risk_level": _item_risk_level(item),
+            "review_group": _item_review_group(item),
+            "shared_surfaces": list(item.get("shared_surfaces") or []),
+            "blocked_by": list(item.get("blocked_by") or []),
+            "blocks": list(item.get("blocks") or []),
+        }
+        for item in items
+    ]
 
 
 def _next_action_text(
@@ -1692,6 +1936,53 @@ def _field(item: Dict[str, Any], key: str) -> str:
     return "" if value is None else str(value).strip()
 
 
+def _first_meaningful_field(item: Dict[str, Any], keys: Tuple[str, ...]) -> str:
+    for key in keys:
+        value = _field(item, key)
+        if not _is_blankish(value):
+            return value
+    return ""
+
+
+def _item_review_mode(item: Dict[str, Any]) -> str:
+    value = _first_meaningful_field(item, ("review_mode",))
+    if not value:
+        return "single"
+    normalized = value.casefold().replace("_", "-")
+    aliases = {
+        "batch": "batch-eligible",
+        "batch-review": "batch-eligible",
+        "批量": "batch-eligible",
+        "批量审核": "batch-eligible",
+        "可批量": "batch-eligible",
+        "可批量审核": "batch-eligible",
+        "单审": "single",
+        "单项": "single",
+        "单项审核": "single",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _item_review_group(item: Dict[str, Any]) -> str:
+    return _agent_name(_first_meaningful_field(item, ("review_group",)))
+
+
+def _item_risk_level(item: Dict[str, Any]) -> str:
+    value = _first_meaningful_field(item, ("risk_level", "风险等级"))
+    if not value:
+        return "medium"
+    normalized = value.casefold()
+    aliases = {
+        "低": "low",
+        "低风险": "low",
+        "中": "medium",
+        "中风险": "medium",
+        "高": "high",
+        "高风险": "high",
+    }
+    return aliases.get(normalized, normalized)
+
+
 def _reviewer_closed(item: Dict[str, Any]) -> bool:
     reviewer_state = _field(item, "reviewer_state").casefold()
     review_record = str(item.get("review_record") or "").casefold()
@@ -1741,6 +2032,14 @@ def _routing_updates(routes: Dict[str, Optional[str]]) -> Dict[str, str]:
         if agent_name:
             updates[key] = agent_name
     return updates
+
+
+def _item_definition_field(item: Dict[str, object], keys: Tuple[str, ...], default: str) -> str:
+    for key in keys:
+        value = item.get(key)
+        if not _is_blankish(value):
+            return str(value).strip()
+    return default
 
 
 def _normalize_list(value: Any) -> List[str]:
@@ -1869,6 +2168,25 @@ def _packet_output_artifacts(
     if packet_type == "review":
         artifacts["review_file"] = str(document_dir / f"{slug}-review.md")
     return artifacts
+
+
+def _review_batch_output_artifacts(
+    checklist_path: Union[str, Path],
+    review_group: str,
+    item_ids: List[str],
+    workflow_context: Optional[Dict[str, str]] = None,
+) -> Dict[str, object]:
+    document_dir = _strict_review_document_dir(checklist_path, workflow_context)
+    group_slug = _artifact_slug(review_group)
+    return {
+        "document_dir": str(document_dir),
+        "task_dir": str(document_dir.name),
+        "review_batch_file": str(document_dir / f"{group_slug}-review-batch.md"),
+        "per_item_review_files": {
+            item_id: str(document_dir / f"{_artifact_slug(item_id)}-review.md")
+            for item_id in item_ids
+        },
+    }
 
 
 def _split_h2_ranges(lines: List[str]) -> List[Tuple[str, int, int]]:

@@ -60,13 +60,13 @@ python3 strict-review-development-mode/controller.py cycle --checklist .strict-r
 `cycle --json` 会按固定优先级输出 packet：
 
 1. `rework` / `replan`：优先处理 reviewer 要求修改的事项。
-2. `review`：实现和验证已完成，等待独立审核。
+2. `review-batch` / `review`：实现和验证已完成，等待独立审核。
 3. `planning`：ready 但尚无具体计划。
 4. `implementation`：ready 且计划已写明，可进入实施。
 
 packet 是唯一派工合同。目标 agent 只负责 packet 的 `agent_objective` 和 `success_criteria`，只把强审流程文档写入 packet 指向的 `.strict-review/<task-slug>/` 路径，并用 packet 给出的 controller 命令写回结果。完整字段语义见 `references/protocol.md`。
 
-提速原则：planning 和 review packet 可并行时优先并行；implementation / rework 仍受 DAG 依赖和 `shared_surfaces` 冲突约束。共享面相同的事项可以并行写计划，但不能同时进入会互相污染的实施状态。
+提速原则：planning 和 review packet 可并行时优先并行；implementation / rework 仍受 DAG 依赖和 `shared_surfaces` 冲突约束。共享面相同的事项可以并行写计划，但不能同时进入会互相污染的实施状态。低/中风险且 `review_mode：batch-eligible`、`review_group` 相同的事项可由 controller 输出 `review-batch`；批量只合并阅读上下文，`assign-reviewer`、`request-changes`、`approve` 仍逐项执行，高风险事项保持单审。
 
 ## 文档格式
 

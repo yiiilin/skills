@@ -21,6 +21,7 @@
 - `.strict-review/<task-slug>/<item_id>-implementation.md`
 - `.strict-review/<task-slug>/<item_id>-verification.md`
 - `.strict-review/<task-slug>/<item_id>-review.md`
+- `.strict-review/<task-slug>/<review_group>-review-batch.md`
 - `.strict-review/<task-slug>/<item_id>-reviewer-replacement.md`
 
 coordinator 和各角色 agent 不应在项目根目录生成 `strict-review-*.md`、`.strict-review-item-*.md` 或 `strict-review-artifacts/`，也不应把多轮任务日志直接平铺到 `.strict-review/` 根目录。历史 checklist 可以继续读取旧路径，但新产生的计划、实施、验证、审核和 reviewer replacement 原因必须写入 `.strict-review/<task-slug>/`。
@@ -101,6 +102,9 @@ controller 在执行 `plan`、`mark-implemented`、`request-changes`、`approve`
 - `parallel_group`
 - `dispatch_status`
 - `assigned_subagent`
+- `risk_level`：`low`、`medium` 或 `high`，缺省按 `medium` 处理
+- `review_mode`：`single` 或 `batch-eligible`，缺省按 `single` 处理
+- `review_group`：批量审核分组；`single` 时使用 `none`
 
 可选 item 级路由覆盖：
 
@@ -165,7 +169,7 @@ python3 strict-review-development-mode/controller.py cycle --checklist .strict-r
 调度优先级固定：
 
 1. `changes-requested` -> `rework` / `replan`
-2. `implemented` 或 `review-queued` -> `review`
+2. `implemented` 或 `review-queued` -> `review-batch` / `review`
 3. `ready` -> `planning` 或 `implementation`
 
 如果 `任务启动总规划` 的 `启动判定` 为 `needs-clarification`，controller 不得派发 `implementation` 或 `rework` packet，也不得允许 `start` 进入实施；只能继续补规划、澄清问题或处理已经进入 review 的事项。缺少该章节的历史 checklist 先报 warning 并保持兼容。
@@ -175,6 +179,17 @@ coordinator 自行拆出的 phase、阶段、wave、批次只用于内部调度�
 子 agent 数量不设固定并发上限。controller 仍会用 DAG 依赖和 `shared_surfaces` 冲突控制实施安全边界，reviewer 仍必须保持独立且不能自审。
 
 planning 和 review packet 可并行时优先并行。共享面相同的 ready item 可以同时派发 planning packet，因为计划写作不进入实施状态；implementation / rework packet 仍受 DAG 依赖和 `shared_surfaces` 冲突约束，避免并行写同一共享面。
+
+批量 review 只合并 reviewer 的阅读工作，不合并状态迁移。满足以下条件时，controller 可以把同组事项合成一个 `review-batch` packet：
+
+- item 已是 `implemented` 或 `review-queued`
+- 实施记录和验证记录均已写入
+- `review_mode` 为 `batch-eligible`
+- `review_group` 非空且不是 `none`
+- `risk_level` 不是 `high`
+- 同一 `review_group` 且同一路由下至少有 2 个 eligible item
+
+高风险事项必须使用 `review_mode：single`。`review-batch` 的 reviewer 可以把多个 item 汇总到同一个批量审核文档，但必须逐项给出结论，并把每个 item 的写回片段放到 `output_artifacts.per_item_review_files[item_id]`；`assign-reviewer`、`request-changes`、`approve` 仍然必须按 item 分别执行。controller 会在 packet 的 `commands.assign_reviewer_by_item`、`commands.request_changes_by_item`、`commands.approve_by_item` 中给出逐项命令模板。
 
 packet 包含路由字段：
 
