@@ -15,8 +15,9 @@ MODULE_DIR = Path(__file__).resolve().parent
 VIEWER_DIR = MODULE_DIR / "viewer"
 CONTROLLER_PATH = MODULE_DIR / "controller.py"
 
-IMPLEMENTATION_LIMIT = 4
-REVIEWER_LIMIT = 2
+# 子 agent 并发不再设置固定数量上限；DAG 依赖和 shared_surfaces 仍然负责安全调度。
+IMPLEMENTATION_LIMIT: Optional[int] = None
+REVIEWER_LIMIT: Optional[int] = None
 FINISHED_STATUS = "done"
 DEFAULT_AGENT = "current"
 STRICT_REVIEW_DOCUMENT_DIR = ".strict-review"
@@ -56,6 +57,10 @@ APPROVAL_MARKERS = (
     "没有发现问题",
     "未发现问题",
 )
+ARTIFACT_MARKDOWN_REQUIREMENT = (
+    "Markdown 文档必须是可嵌入 checklist 小节的正文片段；不要使用 H1/H2/H3 标题，"
+    "不要写新的 ## Item 或 ### 结构化字段；需要分节时使用 H4-H6 或列表。"
+)
 
 WORKFLOW_STATE_DIAGRAM = """stateDiagram-v2
   [*] --> blocked: 有未完成依赖
@@ -67,7 +72,7 @@ WORKFLOW_STATE_DIAGRAM = """stateDiagram-v2
 
   active --> implemented: controller mark-implemented
   implemented --> review_queued: controller queue-review
-  implemented --> in_review: controller assign-reviewer / reviewer 槽位可用
+  implemented --> in_review: controller assign-reviewer / 分配 reviewer
   review_queued --> in_review: controller assign-reviewer
   in_review --> in_review: controller replace-reviewer / reviewer 超时
 
@@ -84,6 +89,7 @@ H3_RE = re.compile(r"^###\s+(.*\S)\s*$")
 FENCE_RE = re.compile(r"^\s*(?P<fence>`{3,}|~{3,})")
 STRUCTURED_LINE_RE = re.compile(r"^(\s*-\s+)([^：:]+?)(\s*[：:]\s*)(.*)$")
 CHECKLIST_ITEM_RE = re.compile(r"^(\s*-\s+\[)(?: |x|X)(\]\s+\d+\.\s+)(.*)$")
+ARTIFACT_STRUCTURAL_HEADING_RE = re.compile(r"^(?P<indent> {0,3})(?P<marks>#{1,3})(?P<space>\s+)(?P<title>.*)$")
 
 # 不同 packet 类型会优先读取不同的路由字段；这些字段都是不透明 agent 标签。
 ROUTE_KEYS_BY_PACKET_TYPE = {
@@ -250,8 +256,8 @@ def build_cycle_plan(checklist_path: Union[str, Path]) -> Dict[str, object]:
         "ok": not has_errors,
         "checklist": str(Path(checklist_path)),
         "limits": {
-            "implementation": IMPLEMENTATION_LIMIT,
-            "reviewer": REVIEWER_LIMIT,
+            "implementation": _limit_payload_value(IMPLEMENTATION_LIMIT),
+            "reviewer": _limit_payload_value(REVIEWER_LIMIT),
         },
         "active_items": active_items,
         "in_review_items": reviewing_items,
@@ -283,7 +289,7 @@ def plan_item(checklist_path: Union[str, Path], item_id: str, plan_text: str) ->
 
     path = Path(checklist_path)
     document = path.read_text(encoding="utf-8")
-    document = _set_item_section(document, item_id, "计划", plan_text.strip() + "\n")
+    document = _set_item_section(document, item_id, "计划", _normalize_artifact_markdown_body(plan_text) + "\n")
     document = _set_structured_field(document, item_id, "next_action", "计划已写入；等待 start 命令进入实施")
     path.write_text(document, encoding="utf-8")
     return validate_checklist(path)
@@ -299,7 +305,7 @@ def start_item(checklist_path: Union[str, Path], item_id: str, agent_id: str) ->
     _require_protocol_ready(parsed, snapshot)
     _ensure_plan_ready(item)
     _ensure_dependencies_done(item, item_by_id)
-    _ensure_active_slot_available(snapshot["items"], item)
+    _ensure_implementation_concurrency_available(snapshot["items"], item)
     _ensure_no_active_surface_conflict(snapshot["items"], item)
 
     path = Path(checklist_path)
@@ -331,8 +337,8 @@ def mark_implemented(
 
     path = Path(checklist_path)
     document = path.read_text(encoding="utf-8")
-    document = _set_item_section(document, item_id, "实施记录", implementation_text.strip() + "\n")
-    document = _set_item_section(document, item_id, "验证记录", verification_text.strip() + "\n")
+    document = _set_item_section(document, item_id, "实施记录", _normalize_artifact_markdown_body(implementation_text) + "\n")
+    document = _set_item_section(document, item_id, "验证记录", _normalize_artifact_markdown_body(verification_text) + "\n")
     document = _set_structured_field(document, item_id, "dispatch_status", "implemented")
     document = _set_structured_field(document, item_id, "next_action", "实现和验证已记录；等待 queue-review")
     path.write_text(document, encoding="utf-8")
@@ -352,7 +358,7 @@ def queue_review(checklist_path: Union[str, Path], item_id: str) -> Dict[str, ob
     path = Path(checklist_path)
     document = path.read_text(encoding="utf-8")
     document = _set_structured_field(document, item_id, "dispatch_status", "review-queued")
-    document = _set_structured_field(document, item_id, "next_action", "等待 reviewer 槽位")
+    document = _set_structured_field(document, item_id, "next_action", "等待分配 reviewer")
     path.write_text(document, encoding="utf-8")
     return validate_checklist(path)
 
@@ -364,7 +370,7 @@ def assign_reviewer(checklist_path: Union[str, Path], item_id: str, reviewer_id:
     item = _require_item(snapshot["items"], item_id)
     if item.get("dispatch_status") not in {"implemented", "review-queued"}:
         raise ValueError(f"{item_id} must be implemented or review-queued before assign-reviewer")
-    _ensure_reviewer_slot_available(snapshot["items"], item)
+    _ensure_reviewer_concurrency_available(snapshot["items"], item)
     _ensure_implementation_ready(item)
     _ensure_verification_ready(item)
     _ensure_independent_reviewer(item, reviewer_id)
@@ -408,7 +414,7 @@ def replace_reviewer(
     if _is_blankish(reason_text):
         raise ValueError("replacement reason is required")
 
-    reason = reason_text.strip()
+    reason = _normalize_inline_artifact_text(reason_text)
     replacement_note = f"{replacement_reviewer}（替换 {current_reviewer}；原因：{reason}）"
 
     path = Path(checklist_path)
@@ -439,7 +445,7 @@ def request_changes(checklist_path: Union[str, Path], item_id: str, review_text:
 
     path = Path(checklist_path)
     document = path.read_text(encoding="utf-8")
-    document = _set_item_section(document, item_id, "审核记录", review_text.strip() + "\n")
+    document = _set_item_section(document, item_id, "审核记录", _normalize_artifact_markdown_body(review_text) + "\n")
     document = _set_structured_field(document, item_id, "dispatch_status", "changes-requested")
     document = _set_structured_field(document, item_id, "next_action", "优先处理 reviewer 反馈并补充验证")
     path.write_text(document, encoding="utf-8")
@@ -460,7 +466,7 @@ def approve_item(checklist_path: Union[str, Path], item_id: str, review_text: st
 
     path = Path(checklist_path)
     document = path.read_text(encoding="utf-8")
-    document = _set_item_section(document, item_id, "审核记录", review_text.strip() + "\n")
+    document = _set_item_section(document, item_id, "审核记录", _normalize_artifact_markdown_body(review_text) + "\n")
     document = _set_structured_field(document, item_id, "dispatch_status", "done")
     document = _set_structured_field(document, item_id, "reviewer_state", "closed")
     document = _set_structured_field(document, item_id, "next_action", "事项已完成")
@@ -546,8 +552,9 @@ def init_checklist(
         "## 审核设置",
         "- 审核模型目标：gpt-5.4",
         "- 推理强度目标：xhigh",
-        f"- 实施并行上限：{IMPLEMENTATION_LIMIT}",
-        f"- reviewer 并行上限：{REVIEWER_LIMIT}",
+        f"- 实施并行上限：{_limit_human_text(IMPLEMENTATION_LIMIT)}",
+        f"- reviewer 并行上限：{_limit_human_text(REVIEWER_LIMIT)}",
+        "- 并行安全约束：不限制子 agent 数量；实施仍受 DAG 依赖和 shared_surfaces 冲突约束",
         "- 首次等待窗口：10min",
         "- 二次探测窗口：10-20min",
         "- 硬超时门槛：30min",
@@ -733,7 +740,7 @@ def _build_protocol_violations(parsed: Any, snapshot: Dict[str, Any]) -> List[Co
 
     active_items = [item for item in items if item.get("dispatch_status") == "active"]
     in_review_items = [item for item in items if item.get("dispatch_status") == "in-review"]
-    if len(active_items) > IMPLEMENTATION_LIMIT:
+    if _limit_exceeded(len(active_items), IMPLEMENTATION_LIMIT):
         violations.append(
             ControllerViolation(
                 severity="error",
@@ -741,7 +748,7 @@ def _build_protocol_violations(parsed: Any, snapshot: Dict[str, Any]) -> List[Co
                 message=f"Active implementation count exceeds {IMPLEMENTATION_LIMIT}",
             )
         )
-    if len(in_review_items) > REVIEWER_LIMIT:
+    if _limit_exceeded(len(in_review_items), REVIEWER_LIMIT):
         violations.append(
             ControllerViolation(
                 severity="error",
@@ -950,7 +957,7 @@ def _build_dispatch_packets(
     for item in items:
         if item.get("dispatch_status") != "changes-requested":
             continue
-        if active_count >= IMPLEMENTATION_LIMIT:
+        if _limit_reached(active_count, IMPLEMENTATION_LIMIT):
             break
         surfaces = set(item.get("shared_surfaces") or [])
         if surfaces.intersection(active_surfaces | selected_surfaces):
@@ -965,7 +972,7 @@ def _build_dispatch_packets(
     for item in items:
         if item.get("dispatch_status") not in {"implemented", "review-queued"}:
             continue
-        if reviewer_count >= REVIEWER_LIMIT:
+        if _limit_reached(reviewer_count, REVIEWER_LIMIT):
             break
         if _is_blankish(item.get("implementation_record")) or _is_blankish(item.get("verification_record")):
             continue
@@ -973,7 +980,7 @@ def _build_dispatch_packets(
         reviewer_count += 1
 
     for item in items:
-        if active_count >= IMPLEMENTATION_LIMIT:
+        if _limit_reached(active_count, IMPLEMENTATION_LIMIT):
             break
         if item.get("dispatch_status") != "ready":
             continue
@@ -1006,7 +1013,7 @@ def _planning_packet(
     command = f"python3 {CONTROLLER_PATH} plan --checklist {checklist_path} --item {item_id} --text-file {plan_file}"
     prompt = (
         f"为 {item_id} - {title} 写计划。计划必须写清改动范围、文件 ownership、DAG 依赖、"
-        f"shared_surfaces、并行性、验证方式和风险边界；计划文档写到 {plan_file}，写好后用 controller plan 写回。"
+        f"shared_surfaces、并行性、验证方式和风险边界；计划文档写到 {plan_file}，正文不要使用 H1/H2/H3 标题，写好后用 controller plan 写回。"
     )
     route = _resolve_agent_route(packet_type, item, agent_routing)
     contract = _planning_contract(item, packet_type, workflow_context)
@@ -1055,7 +1062,7 @@ def _implementation_packet(
     )
     prompt = (
         f"实施 {item_id} - {title}。只处理该事项计划内内容；完成后用 controller mark-implemented "
-        f"写入实施记录和验证记录，文档分别放到 {implementation_file} 和 {verification_file}。"
+        f"写入实施记录和验证记录，文档分别放到 {implementation_file} 和 {verification_file}，正文不要使用 H1/H2/H3 标题。"
     )
     route = _resolve_agent_route(packet_type, item, agent_routing)
     contract = _implementation_contract(item, packet_type, workflow_context)
@@ -1103,7 +1110,7 @@ def _review_packet(
     approve_command = f"python3 {CONTROLLER_PATH} approve --checklist {checklist_path} --item {item_id} --review-file {review_file}"
     prompt = (
         f"审核 {item_id} - {title}。检查是否符合计划、DAG、shared_surfaces 和验证记录；"
-        f"审核文档写到 {review_file}，若有问题用 request-changes，若通过用 approve。"
+        f"审核文档写到 {review_file}，正文不要使用 H1/H2/H3 标题；若有问题用 request-changes，若通过用 approve。"
     )
     route = _resolve_agent_route("review", item, agent_routing)
     contract = _review_contract(item, workflow_context)
@@ -1234,6 +1241,8 @@ def _packet_contract(
     handoff_requirements: List[str],
     input_artifacts: Dict[str, object],
 ) -> Dict[str, Any]:
+    normalized_handoff_requirements = [ARTIFACT_MARKDOWN_REQUIREMENT]
+    normalized_handoff_requirements.extend(handoff_requirements)
     non_goals = [
         "不要操心全局调度、其他 agent 分工或未分配给本 item 的事项",
         "不要手改 dispatch_status、assigned_subagent、reviewer_id、reviewer_state 或 checklist 勾选状态",
@@ -1246,7 +1255,7 @@ def _packet_contract(
         "local_scope": _local_scope(item),
         "success_criteria": success_criteria,
         "non_goals": non_goals,
-        "handoff_requirements": handoff_requirements,
+        "handoff_requirements": normalized_handoff_requirements,
         "input_artifacts": input_artifacts,
     }
 
@@ -1346,15 +1355,15 @@ def _ensure_dependencies_done(item: Dict[str, Any], item_by_id: Dict[str, Dict[s
         raise ValueError(f"{_item_id(item)} has unfinished dependencies: {', '.join(missing)}")
 
 
-def _ensure_active_slot_available(items: List[Dict[str, Any]], item: Dict[str, Any]) -> None:
+def _ensure_implementation_concurrency_available(items: List[Dict[str, Any]], item: Dict[str, Any]) -> None:
     active_count = sum(1 for candidate in items if candidate.get("dispatch_status") == "active" and _item_id(candidate) != _item_id(item))
-    if active_count >= IMPLEMENTATION_LIMIT:
+    if _limit_reached(active_count, IMPLEMENTATION_LIMIT):
         raise ValueError(f"implementation concurrency limit {IMPLEMENTATION_LIMIT} is full")
 
 
-def _ensure_reviewer_slot_available(items: List[Dict[str, Any]], item: Dict[str, Any]) -> None:
+def _ensure_reviewer_concurrency_available(items: List[Dict[str, Any]], item: Dict[str, Any]) -> None:
     reviewer_count = sum(1 for candidate in items if candidate.get("dispatch_status") == "in-review" and _item_id(candidate) != _item_id(item))
-    if reviewer_count >= REVIEWER_LIMIT:
+    if _limit_reached(reviewer_count, REVIEWER_LIMIT):
         raise ValueError(f"reviewer concurrency limit {REVIEWER_LIMIT} is full")
 
 
@@ -1492,10 +1501,62 @@ def _format_list(values: List[str]) -> str:
     return "[]" if not values else "[" + ", ".join(values) + "]"
 
 
+def _limit_payload_value(limit: Optional[int]) -> object:
+    return "unlimited" if limit is None else limit
+
+
+def _limit_human_text(limit: Optional[int]) -> str:
+    return "不限制" if limit is None else str(limit)
+
+
+def _limit_reached(count: int, limit: Optional[int]) -> bool:
+    return limit is not None and count >= limit
+
+
+def _limit_exceeded(count: int, limit: Optional[int]) -> bool:
+    return limit is not None and count > limit
+
+
 def _read_text_arg(text: Optional[str], text_file: Optional[str]) -> str:
     if text_file:
         return Path(text_file).read_text(encoding="utf-8")
     return text or ""
+
+
+def _normalize_artifact_markdown_body(text: str) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+
+    lines: List[str] = []
+    in_fence = False
+    active_fence: Optional[str] = None
+    for line in normalized.splitlines():
+        fence_match = FENCE_RE.match(line)
+        if fence_match:
+            lines.append(line)
+            in_fence, active_fence = _next_fence_state(line, in_fence, active_fence)
+            continue
+
+        if not in_fence:
+            heading_match = ARTIFACT_STRUCTURAL_HEADING_RE.match(line)
+            if heading_match:
+                # checklist 的结构占用 H2/H3；外部 artifact 写回前降级标题，避免解析器误切 item。
+                demoted_marks = "#" * (len(heading_match.group("marks")) + 3)
+                lines.append(
+                    f"{heading_match.group('indent')}{demoted_marks}"
+                    f"{heading_match.group('space')}{heading_match.group('title').rstrip()}"
+                )
+                continue
+
+        lines.append(line)
+
+    return "\n".join(lines).strip()
+
+
+def _normalize_inline_artifact_text(text: str) -> str:
+    normalized = _normalize_artifact_markdown_body(text)
+    return " / ".join(line.strip() for line in normalized.splitlines() if line.strip())
 
 
 def _is_strict_review_task_path(checklist_path: Union[str, Path]) -> bool:

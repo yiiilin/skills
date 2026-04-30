@@ -13,7 +13,7 @@ stateDiagram-v2
 
   active --> implemented: controller mark-implemented
   implemented --> review_queued: controller queue-review
-  implemented --> in_review: controller assign-reviewer / reviewer 槽位可用
+  implemented --> in_review: controller assign-reviewer / 分配 reviewer
   review_queued --> in_review: controller assign-reviewer
   in_review --> in_review: controller replace-reviewer / reviewer 超时
 
@@ -31,7 +31,7 @@ stateDiagram-v2
 - `ready`：依赖已满足；如果计划缺失，下一步是 `planning` packet；如果计划已写明，下一步是 `implementation` packet。
 - `active`：事项正在实施，尚未完成实施和验证闭环。
 - `implemented`：实施和验证已记录，等待审核调度。
-- `review-queued`：等待 reviewer 槽位。
+- `review-queued`：等待分配 reviewer。
 - `in-review`：独立 reviewer 正在审核。
 - `changes-requested`：reviewer 要求修改，下一 cycle 优先处理。
 - `done`：最新审核通过，reviewer 已关闭。

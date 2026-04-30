@@ -196,8 +196,8 @@ function renderOverview(snapshot) {
   const summaryGrid = document.createElement("div");
   summaryGrid.className = "summary-grid";
   summaryGrid.appendChild(createSummaryCard("Items", String(ensureItems(snapshot).length)));
-  summaryGrid.appendChild(createSummaryCard("Implementation Slots", String(snapshot.meta.implementation_concurrency || 0)));
-  summaryGrid.appendChild(createSummaryCard("Reviewer Slots", String(snapshot.meta.reviewer_concurrency || 0)));
+  summaryGrid.appendChild(createSummaryCard("Active Implementations", String(snapshot.meta.implementation_concurrency || 0)));
+  summaryGrid.appendChild(createSummaryCard("Active Reviewers", String(snapshot.meta.reviewer_concurrency || 0)));
   summaryGrid.appendChild(createSummaryCard("DAG State", snapshot.meta.dag_degraded ? "Degraded" : "Healthy"));
   dom.overview.appendChild(summaryGrid);
 

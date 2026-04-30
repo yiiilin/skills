@@ -25,6 +25,12 @@
 
 coordinator 和各角色 agent 不应在项目根目录生成 `strict-review-*.md`、`.strict-review-item-*.md` 或 `strict-review-artifacts/`，也不应把多轮任务日志直接平铺到 `.strict-review/` 根目录。历史 checklist 可以继续读取旧路径，但新产生的计划、实施、验证、审核和 reviewer replacement 原因必须写入 `.strict-review/<task-slug>/`。
 
+## 派工文档 Markdown 格式
+
+计划、实施、验证、审核和 reviewer replacement 文档是写回 checklist 小节的正文片段，不是独立页面。agent 不应在这些文档中使用 H1/H2/H3 标题，也不应生成新的 `## Item ...`、`### 结构化字段`、`### 计划`、`### 实施记录`、`### 验证记录` 或 `### 审核记录`。需要分节时使用 H4-H6 或无序列表。
+
+controller 在执行 `plan`、`mark-implemented`、`request-changes`、`approve` 和 `replace-reviewer` 时会对外部 Markdown 正文做结构安全化：代码块外的 H1-H3 会被降级为 H4-H6，防止常见 Markdown 标题被解析成 checklist 结构标题。
+
 ## 任务归属判定
 
 在创建或复用 checklist 前，必须判定当前请求：
@@ -103,7 +109,7 @@ python3 strict-review-development-mode/controller.py set-routing --checklist .st
 - `ready`：依赖满足，等待计划或实施。
 - `active`：正在实施。
 - `implemented`：实施和验证已记录，等待审核调度。
-- `review-queued`：等待 reviewer 槽位。
+- `review-queued`：等待分配 reviewer。
 - `in-review`：reviewer 正在审核。
 - `changes-requested`：reviewer 要求修改。
 - `done`：审核通过且 reviewer 已关闭。
@@ -122,7 +128,7 @@ python3 strict-review-development-mode/controller.py cycle --checklist .strict-r
 2. `implemented` 或 `review-queued` -> `review`
 3. `ready` -> `planning` 或 `implementation`
 
-实施并发上限为 `4`，reviewer 并发上限为 `2`。
+子 agent 数量不设固定并发上限。controller 仍会用 DAG 依赖和 `shared_surfaces` 冲突控制实施安全边界，reviewer 仍必须保持独立且不能自审。
 
 packet 包含路由字段：
 
@@ -164,7 +170,7 @@ coordinator 派发工作时，应把这些字段连同 `prompt` 一起给目标 
 ## 单项闭环
 
 1. 写计划：用 `controller.py plan` 写入计划。计划必须说明改动范围、文件 ownership、依赖、共享面、并行性、验证方式和风险。
-2. 开始实施：用 `controller.py start`。controller 会检查计划、依赖、并发上限和共享面冲突。
+2. 开始实施：用 `controller.py start`。controller 会检查计划、依赖和共享面冲突。
 3. 完成实施：用 `controller.py mark-implemented` 写入实施记录和验证记录。
 4. 进入审核：用 `controller.py queue-review` 和 `controller.py assign-reviewer`。
 5. reviewer 达到硬超时且需要替换：用 `controller.py replace-reviewer`，保持 item 在 `in-review`，但替换独立 reviewer 并记录原因。

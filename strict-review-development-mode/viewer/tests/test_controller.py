@@ -101,8 +101,9 @@ def build_checklist(*item_blocks: str, routing: str = "") -> str:
             ## 审核设置
             - 审核模型目标：gpt-5.4
             - 推理强度目标：xhigh
-            - 实施并行上限：4
-            - reviewer 并行上限：2
+            - 实施并行上限：不限制
+            - reviewer 并行上限：不限制
+            - 并行安全约束：不限制子 agent 数量；实施仍受 DAG 依赖和 shared_surfaces 冲突约束
 
             {routing_section}
 
@@ -149,7 +150,7 @@ def violation_codes(payload: Dict[str, object]) -> Set[str]:
 
 
 class ControllerValidationTests(unittest.TestCase):
-    def test_validate_reports_lifecycle_dependency_and_concurrency_errors(self) -> None:
+    def test_validate_reports_lifecycle_dependency_and_surface_errors(self) -> None:
         path = write_temp_checklist(
             build_checklist(
                 make_item(
@@ -242,6 +243,96 @@ class ControllerValidationTests(unittest.TestCase):
         self.assertEqual("item-1", packets[0]["item_id"])
         self.assertIn("controller.py plan", packets[0]["command"])
 
+    def test_cycle_emits_all_eligible_packets_without_subagent_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / ".strict-review" / "no-subagent-limit" / "checklist.md"
+            controller.init_checklist(
+                path,
+                "No Subagent Limit",
+                "取消子 agent 并发数量限制",
+                [
+                    {
+                        "item_id": f"item-{index}",
+                        "title": f"Item {index}",
+                        "blocked_by": [],
+                        "shared_surfaces": [f"surface-{index}"],
+                        "parallel_group": "wave-1",
+                    }
+                    for index in range(1, 9)
+                ],
+            )
+
+            for index in range(1, 4):
+                item_id = f"item-{index}"
+                self.assertTrue(controller.plan_item(path, item_id, f"- 计划：准备审核事项 {index}")["ok"])
+                self.assertTrue(controller.start_item(path, item_id, f"agent-{index}")["ok"])
+                self.assertTrue(
+                    controller.mark_implemented(
+                        path,
+                        item_id,
+                        f"- 已实现事项 {index}",
+                        f"- 已验证事项 {index}",
+                    )["ok"]
+                )
+
+            for index in range(4, 9):
+                self.assertTrue(controller.plan_item(path, f"item-{index}", f"- 计划：准备实施事项 {index}")["ok"])
+
+            payload = controller.build_cycle_plan(path)
+
+            packets = payload["dispatch_packets"]
+            self.assertEqual({"implementation": "unlimited", "reviewer": "unlimited"}, payload["limits"])
+            self.assertEqual(8, len(packets))
+            self.assertEqual(["review", "review", "review"], [packet["packet_type"] for packet in packets[:3]])
+            self.assertEqual(["implementation"] * 5, [packet["packet_type"] for packet in packets[3:]])
+
+    def test_start_and_assign_reviewer_allow_more_than_legacy_subagent_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / ".strict-review" / "legacy-limit-removal" / "checklist.md"
+            controller.init_checklist(
+                path,
+                "Legacy Limit Removal",
+                "验证旧子 agent 并发上限已取消",
+                [
+                    {
+                        "item_id": f"item-{index}",
+                        "title": f"Item {index}",
+                        "blocked_by": [],
+                        "shared_surfaces": [f"surface-{index}"],
+                        "parallel_group": "wave-1",
+                    }
+                    for index in range(1, 6)
+                ],
+            )
+
+            for index in range(1, 6):
+                item_id = f"item-{index}"
+                self.assertTrue(controller.plan_item(path, item_id, f"- 计划：实施事项 {index}")["ok"])
+                self.assertTrue(controller.start_item(path, item_id, f"agent-{index}")["ok"])
+
+            active_payload = controller.validate_checklist(path)
+            self.assertTrue(active_payload["ok"])
+            self.assertEqual(5, active_payload["counts"]["active"])
+
+            for index in range(1, 4):
+                item_id = f"item-{index}"
+                self.assertTrue(
+                    controller.mark_implemented(
+                        path,
+                        item_id,
+                        f"- 已实现事项 {index}",
+                        f"- 已验证事项 {index}",
+                    )["ok"]
+                )
+                self.assertTrue(controller.queue_review(path, item_id)["ok"])
+                self.assertTrue(controller.assign_reviewer(path, item_id, f"reviewer-{index}")["ok"])
+
+            review_payload = controller.validate_checklist(path)
+            self.assertTrue(review_payload["ok"])
+            self.assertEqual(3, review_payload["counts"]["in-review"])
+            self.assertNotIn("implementation_concurrency_exceeded", violation_codes(review_payload))
+            self.assertNotIn("reviewer_concurrency_exceeded", violation_codes(review_payload))
+
     def test_cycle_routes_packets_with_global_agent_policy_without_invocation_parameters(self) -> None:
         routing = textwrap.dedent(
             """\
@@ -312,6 +403,7 @@ class ControllerValidationTests(unittest.TestCase):
         self.assertIn("agent_objective", packets[0])
         self.assertIn("success_criteria", packets[0])
         self.assertIn("handoff_requirements", packets[0])
+        self.assertIn("不要使用 H1/H2/H3", "\n".join(packets[0]["handoff_requirements"]))
 
         planning_packet = packet_by_type["planning"]
         implementation_packet = packet_by_type["implementation"]
@@ -501,6 +593,58 @@ class ControllerValidationTests(unittest.TestCase):
             self.assertIn("- dispatch_status：done", document)
             self.assertIn("- reviewer_state：closed", document)
             self.assertIn("- [x] 1. Build controller", document)
+
+    def test_lifecycle_normalizes_heading_rich_artifact_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / ".strict-review" / "markdown-artifacts" / "checklist.md"
+            controller.init_checklist(
+                path,
+                "Markdown Artifact Checklist",
+                "复现并修复 artifact Markdown 标题冲突",
+                [
+                    {
+                        "item_id": "item-1",
+                        "title": "Handle markdown artifacts",
+                        "blocked_by": [],
+                        "shared_surfaces": [],
+                        "parallel_group": "wave-1",
+                    }
+                ],
+            )
+
+            plan_payload = controller.plan_item(
+                path,
+                "item-1",
+                "# 计划总览\n## 改动范围\n- 修改 controller\n\n### 验证方式\n```markdown\n## 代码块中的标题保持原样\n```",
+            )
+            self.assertTrue(plan_payload["ok"])
+            self.assertIn("#### 计划总览", plan_payload["items"][0]["plan"])
+            self.assertIn("##### 改动范围", plan_payload["items"][0]["plan"])
+            self.assertIn("###### 验证方式", plan_payload["items"][0]["plan"])
+            self.assertIn("## 代码块中的标题保持原样", plan_payload["items"][0]["plan"])
+
+            self.assertTrue(controller.start_item(path, "item-1", "agent-1")["ok"])
+            implemented_payload = controller.mark_implemented(
+                path,
+                "item-1",
+                "## 实施摘要\n- 已降级 artifact 标题",
+                "### 验证结果\n- 回归测试通过",
+            )
+            self.assertTrue(implemented_payload["ok"])
+            self.assertTrue(controller.queue_review(path, "item-1")["ok"])
+            self.assertTrue(controller.assign_reviewer(path, "item-1", "reviewer-1")["ok"])
+            approval_payload = controller.approve_item(
+                path,
+                "item-1",
+                "## 审核结论\n- 审核结论：通过，未发现问题",
+            )
+
+            document = path.read_text(encoding="utf-8")
+            self.assertTrue(approval_payload["ok"])
+            self.assertIn("##### 实施摘要", document)
+            self.assertIn("###### 验证结果", document)
+            self.assertIn("##### 审核结论", document)
+            self.assertNotIn("missing_item_heading", violation_codes(approval_payload))
 
     def test_replace_reviewer_records_replacement_without_closing_review(self) -> None:
         path = write_temp_checklist(

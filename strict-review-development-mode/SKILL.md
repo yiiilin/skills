@@ -32,6 +32,10 @@ description: Use when the user explicitly asks for 强审开发模式, 使用强
 
 如果正在续做历史 checklist，可以读取旧路径；但新产生的强审文档一律写入 `.strict-review/<task-slug>/`。如果 controller 对 checklist 路径给出 warning，先迁移或新建合规任务目录。
 
+## 派工文档 Markdown 格式
+
+计划、实施、验证、审核和 reviewer replacement 文档必须写成可嵌入 checklist 小节的 Markdown 正文片段。不要使用 H1/H2/H3 标题，不要写新的 `## Item ...`、`### 结构化字段`、`### 计划`、`### 实施记录`、`### 验证记录` 或 `### 审核记录`；需要分节时用 H4-H6 或无序列表。controller 写回外部文档时会自动把 H1-H3 降级，避免 agent 偶然生成的标准 Markdown 标题破坏 checklist 结构。
+
 ## 入口流程
 
 1. 判定当前请求属于 `same-task`、`different-task` 还是 `uncertain`。
