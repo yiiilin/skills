@@ -1,6 +1,6 @@
 # Codex Skills
 
-一个用于存放和开源 Codex skills 的仓库。每个 skill 独立放在自己的目录中，便于单独复制、版本管理和后续持续追加。
+一个用于存放和开源 Codex skills 的仓库。每个 skill 独立放在自己的目录中，便于复制、版本管理和持续演进。
 
 ## 仓库结构
 
@@ -9,62 +9,26 @@
 ```text
 <skill-name>/
   SKILL.md
-  optional-supporting-files
 ```
 
 当前仓库已包含：
 
-- `strict-review-development-mode/`
+- `strict-review-workflow/`
 
 ## 已收录技能
 
-### `strict-review-development-mode`
+### `strict-review-workflow`
 
-“强审开发模式”的开源版本。用于把实现任务强制收敛为：
+纯文字的强审开发工作流。它把协调、实现和独立审查分成不同角色，并通过以下规则控制质量和收敛：
 
-1. 先写 checklist
-2. 先规划 item 级 DAG（结构化字段 + Mermaid）
-3. 依赖与冲突面明确后才允许实施
-4. 每项先写计划，再按计划实施与验证
-5. 通过 `controller.py` 固定化状态机，拒绝非法 `dispatch_status` 迁移
-6. 只要存在互不冲突的 ready 节点，就必须按 `controller.py cycle --json` 的 `dispatch_packets` 派发工作包
-7. 实现完成后按 reviewer 上限进入审核或 `review-queued`
-8. 全部 item 审核通过并关闭 reviewer 后才允许结束
-9. 如用户明确要求打开界面，可启动本地只读 web progress viewer 查看 DAG、队列和 item 详情；checklist 文档仍是唯一 source of truth
+1. 实现前冻结范围、验收标准、自治边界、验证方式和停止条件。
+2. 高风险无人值守任务先进行独立计划审查。
+3. 实现 Agent 完成改动和新鲜验证后，由未参与实现的 Agent 做只读审查。
+4. 只有证据充分的阻塞项触发返工；建议和剩余风险单独披露。
+5. 复审保持固定范围和稳定 Reviewer，并设置硬返工预算。
+6. 只有验收通过且没有有效阻塞项时才能 `complete`；超出自治边界或预算耗尽时进入 `blocked`。
 
-这个可选本地 progress viewer 只在任务执行期间使用，并会在 30 分钟内没有 page requests（no page requests）时自动退出。
-
-收集真实使用中的意外错误报告：
-
-```bash
-python3 strict-review-development-mode/scripts/collect_unexpected_error.py --checklist .strict-review/<task-slug>/checklist.md --category unexpected-dispatch --message "<简短错误描述>" --zip
-```
-
-`controller.py` 是通用 CLI，不绑定具体 agent 平台。它提供 B 方案能力（validator + state machine CLI），并通过 `dispatch_packets` 预留 C 方案能力（外部 orchestrator 可以消费 packet 后派发 subagent/reviewer，再用 controller 命令写回结果）。
-
-`dispatch_packets` 只表达路由意图，不写死外部调用参数。用户只需要和 coordinator 沟通；coordinator 可按 `target_agent` 把 planning、implementation、rework、review 分别交给 Codex、Claude、Gemini、人工 reviewer 或其他 agent，并自行决定模型、参数和上下文传递方式。
-
-coordinator 不需要在每次启动时主动询问 agent 选择；如果用户主动说明“规划/开发/审核分别用哪个 agent”或“某个 item 用哪个 agent”，coordinator 使用 `controller.py set-routing` 写入全局或 item 级路由，之后 `cycle --json` 会自动在 packet 中带出对应 `target_agent`。
-
-每个 `dispatch_packet` 同时是一张敏捷 ticket：包含大任务目的、该 agent 的局部目标、范围、完成标准、非目标和最小上下文。目标 agent 只需要完成这张 ticket，不需要操心其他 item 或全局调度。
-
-目录内容：
-
-- `strict-review-development-mode/SKILL.md`
-- `strict-review-development-mode/checklist-template.md`
-- `strict-review-development-mode/controller.py`（协议校验、状态机迁移、cycle 调度包输出）
-- `strict-review-development-mode/evals/`（C 方案强审评估用例：普通场景、对抗场景、多 agent 路由场景）
-- `strict-review-development-mode/references/protocol.md`（完整协议参考）
-- `strict-review-development-mode/references/workflow-state-machine.md`（工作流状态转换图）
-- `strict-review-development-mode/references/unexpected-error-collection.md`（真实使用中的意外错误收集与 regression eval 转化流程）
-- `strict-review-development-mode/scripts/collect_unexpected_error.py`（本地生成脱敏排错报告包）
-- `strict-review-development-mode/viewer/`（可选本地只读 progress viewer，用于查看 DAG / queue / item 详情，不作为调度真相）
-
-查看状态转换图：
-
-```bash
-python3 strict-review-development-mode/controller.py diagram
-```
+skill 本身只有 `strict-review-workflow/SKILL.md`，不依赖 controller、脚本、数据库、viewer、引用文件或状态文件。纯文字规则无法技术性强制身份独立、并发锁或原子状态转换，具体保证边界以 `SKILL.md` 为准。
 
 ## 适用前提
 
@@ -72,7 +36,7 @@ python3 strict-review-development-mode/controller.py diagram
 
 - 支持 `SKILL.md` 发现与加载
 - 支持按目录组织多个 skill
-- 部分 skill 可能依赖 subagent、reviewer 或指定模型能力
+- `strict-review-workflow` 的独立实现与审查流程需要运行时支持子 Agent；能力不足时按 skill 规则降级或报告 `blocked`
 
 具体前提请以各 skill 目录中的 `SKILL.md` 为准。
 
@@ -82,7 +46,7 @@ python3 strict-review-development-mode/controller.py diagram
 
 ```bash
 mkdir -p "$CODEX_HOME/skills"
-cp -R strict-review-development-mode "$CODEX_HOME/skills/"
+cp -R strict-review-workflow "$CODEX_HOME/skills/"
 ```
 
 安装整个仓库中的全部 skills：
@@ -100,7 +64,7 @@ cp -R ./* "$CODEX_HOME/skills/"
 
 - 一个 skill 一个目录
 - 主文件统一命名为 `SKILL.md`
-- 配套模板、脚本或参考文件放在对应 skill 目录内
+- 只添加完成工作流确实需要的配套文件
 - 仓库首页只做总览，具体用法写在各 skill 自己的文档里
 
 ## License

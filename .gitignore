@@ -1,9 +1,4 @@
 .worktrees/
-docs/
-
-# 强审 skill 的 eval 运行产物，不进入版本库。
-strict-review-development-mode-workspace/
-strict-review-development-mode-error-reports/
 
 # Python 本地运行产物。
 __pycache__/
